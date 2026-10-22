@@ -20,6 +20,7 @@ from .javascript.semantics import JavaScriptBuilder
 from .wildcards import selection_for
 from .shared.null_devices import is_null_device
 from .effort import EvidenceEffort, evidence_effort
+from .shared.command_names import suspicious_command_name
 
 
 def raw_device(path: str) -> bool:
@@ -110,6 +111,16 @@ class DetectorContext:
     def in_workspace(self, path):
         return any(self.paths.inside(path, root) for root in (self.workspace, *self.config.additional_paths))
 
+    def suspicious_command(self, fact, name):
+        hint = suspicious_command_name(name, fact.shell)
+        if hint is None:
+            return False
+        self.emit("unknown-command",
+                  "Suspicious command name; possible quoting error or analyzer parsing issue: " + name,
+                  fact, {"command": name, "command_resolved": True,
+                         "reason": "suspicious_command_name", "name_pattern": hint}, level=Level.HIGH)
+        return True
+
     def tool_invoked(self, fact, name):
         if not name:
             return False
@@ -133,6 +144,7 @@ class DetectorContext:
         from .shared.path_commands import command_basename, modeled_command
         from .known_tools import fallback_category
         command = fact.values[0].text
+        self.suspicious_command(fact, command)
         windows = fact.shell in {"powershell", "cmd"}
         tool = command_basename(command, fact.shell)
         known = modeled_command(tool, windows=windows) or fallback_category(tool, self.config.known_tools, windows=windows) is not None
@@ -380,6 +392,9 @@ class DetectorContext:
                           {"language": fact.shell, "variables": list(fact.targets),
                            "line": int(next(flag[5:] for flag in fact.flags if flag.startswith("line:")))})
             elif fact.kind == "unresolved":
+                if (fact.operation == "unknown-command" and not fact.command_path
+                        and self.suspicious_command(fact, fact.command_name)):
+                    continue
                 if fact.operation == "unknown-command" and self.tool_invoked(fact, fact.command_name):
                     continue
                 if fact.operation == "unknown-command" and fact.command_path:

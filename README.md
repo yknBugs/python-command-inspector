@@ -210,8 +210,8 @@ Every non-empty report conforms to the bundled `schemas/report.json` (JSON Schem
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.10.0",
-  "rule_catalog_version": "1.10.0",
+  "analyzer_version": "1.11.0",
+  "rule_catalog_version": "1.11.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -256,7 +256,12 @@ The catalog contains **76 rules across 9 types** (`content`, `coverage`, `enviro
 | `BLOCK` | Obviously dangerous, almost certain to cause destructive consequences (e.g., deleting system files) |
 
 Levels are fixed per rule (a few rules can emit two levels depending on context). They express
-review priority, not CVSS-style vulnerability severity. Rules can be disabled by id through
+review priority, not CVSS-style vulnerability severity. `unknown-command` is the notable two-level
+rule: it is `LOW` for a command that is genuinely unknown, and `HIGH` when the command-position
+text does not look like a command name (`"print(hello)"`, `"llama cpp"`). The latter usually means
+a quote closed early and the rest was parsed as a command; the finding carries
+`reason: suspicious_command_name` and a `name_pattern` category. That is a warning about the
+command text itself, not just a coverage notice. Rules can be disabled by id through
 configuration. The full catalog, including descriptions and the version a rule was introduced
 in, is available programmatically:
 

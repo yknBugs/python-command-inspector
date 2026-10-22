@@ -146,6 +146,10 @@ class PowerShellBuilder(WindowsBuilder):
         return join(results, self.limit)
 
     def _value(self, node):
+        if node.kind == 'native_equals_argument':
+            if len(node.children) != 2:
+                return Value(None, 'unsupported_expression', self.expression_variables(node))
+            return compose((self.value(node.children[0]), Value('='), self.value(node.children[1])), limit=self.limit)
         if self.numeric_range_command(node):
             return Value(None, "range_expression")
         text = node.text.strip()

@@ -202,8 +202,8 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.10.0",
-  "rule_catalog_version": "1.10.0",
+  "analyzer_version": "1.11.0",
+  "rule_catalog_version": "1.11.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -246,9 +246,12 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 | `HIGH` | 正常编程任务中几乎不会出现的操作（例如卸载文件系统） |
 | `BLOCK` | 明显危险、几乎必然造成破坏性后果的操作（例如删除系统文件） |
 
-每条规则的等级基本固定（少数规则会依上下文输出两个等级）。等级表达的是审查优先级，
-而不是 CVSS 式的漏洞严重度。规则可以通过配置按 id 禁用。完整规则目录（含描述和引入版本）
-可以在代码中获取：
+每条规则的等级基本固定（少数规则会依上下文输出两个等级）。等级表达的是审查优先级，而不是 CVSS
+式的漏洞严重度。`unknown-command` 是典型的两档规则：命令确实未知时是 `LOW`；命令位置上的文本
+不像命令名（`"print(hello)"`、`"llama cpp"`）时是 `HIGH`。后者通常意味着引号提前闭合、后面的
+残句被当成了命令名；finding 的 `reason` 是 `suspicious_command_name`，并带 `name_pattern`
+分类。这是对命令文本本身的警告，不只是覆盖提示。规则可以通过配置按 id 禁用。完整规则目录
+（含描述和引入版本）可以在代码中获取：
 
 ```python
 catalog = analyzer.rule_catalog()

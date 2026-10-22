@@ -7,6 +7,7 @@ from ..bash.syntax import FrontendUnavailable, ParseBudgetExceeded
 
 _FOREACH_OBJECT_NAME = re.compile(r"foreach-object(?=$|[\s;|&>(){])", re.I)
 _NATIVE_EQUALS_ARG = re.compile(r'--[A-Za-z][A-Za-z0-9_-]*=[A-Za-z0-9_./:\\\\-]+(?=$|[\s|;>])')
+_QUOTED_EQUALS_ARG = re.compile(r'''--[A-Za-z][A-Za-z0-9_-]*=(?:'(?:[^']|'')*'|"(?:[^"`$]|`.)*")(?=$|[\s|;>])''')
 
 
 class PowerShellFrontend:
@@ -18,7 +19,7 @@ class PowerShellFrontend:
             raise FrontendUnavailable from None
         self.parser = Parser(Language(tree_sitter_powershell.language()))
 
-    def parse(self, text, max_nodes=65536):
+    def parse(self, text, max_nodes=65536, *, _repairs=0):
         original = self._parse(text, max_nodes)
         if not original.diagnostics:
             return original
@@ -28,6 +29,7 @@ class PowerShellFrontend:
         # or comments. Same-width replacement preserves all character spans.
         parse_text = list(text)
         pending, count, command_names = [original.root], 0, False
+        quoted_arguments = {}
         while pending:
             node = pending.pop()
             count += 1
@@ -36,6 +38,15 @@ class PowerShellFrontend:
                 command_names = True
             if node.kind == 'command_elements':
                 for parameter in node.children:
+                    quoted = (_QUOTED_EQUALS_ARG.match(text, parameter.span.start)
+                              if parameter.kind == 'command_parameter' else None)
+                    if quoted and text[parameter.span.end:parameter.span.end + 1] == '=':
+                        # Parse the quoted value as its own expression, then
+                        # reunite the attached native option without losing its
+                        # quoting or allowing pipes inside it to become commands.
+                        parse_text[parameter.span.end] = ' '
+                        quoted_arguments[parameter.span.start] = quoted.end()
+                        command_names = True
                     if (parameter.kind == 'command_parameter' and parameter.span.end < len(text)
                             and text[parameter.span.end] == '='
                             and _NATIVE_EQUALS_ARG.match(text, parameter.span.start)):
@@ -61,7 +72,10 @@ class PowerShellFrontend:
         remaining = max_nodes - count
         parse_text = ''.join(parse_text)
         if command_names:
-            original = self._parse(parse_text, remaining)
+            # Recovery from one malformed argument can hide the next option.
+            # Revisit newly exposed command tokens, with bounded repair depth.
+            original = (self.parse(parse_text, remaining, _repairs=_repairs + 1)
+                        if _repairs < 3 else self._parse(parse_text, remaining))
             restored, pending, count = {}, [(original.root, False)], 0
             while pending:
                 node, ready = pending.pop()
@@ -70,7 +84,25 @@ class PowerShellFrontend:
                     pending.append((node, True))
                     pending.extend((child, False) for child in reversed(node.children))
                     continue
-                restored[id(node)] = replace(node, children=tuple(restored[id(c)] for c in node.children),
+                children = tuple(restored[id(c)] for c in node.children)
+                if node.kind == 'command_elements' and quoted_arguments:
+                    rebuilt, index = [], 0
+                    while index < len(children):
+                        child = children[index]
+                        end = quoted_arguments.get(child.span.start)
+                        if end is not None and child.kind == 'command_parameter':
+                            parts = []
+                            while index < len(children) and children[index].span.end <= end:
+                                if children[index].kind != 'command_argument_sep':
+                                    parts.append(children[index])
+                                index += 1
+                            rebuilt.append(SyntaxNode('native_equals_argument', Span(child.span.start, end),
+                                                      tuple(parts), text[child.span.start:end]))
+                        else:
+                            rebuilt.append(child)
+                            index += 1
+                    children = tuple(rebuilt)
+                restored[id(node)] = replace(node, children=children,
                                             text=text[node.span.start:node.span.end])
             original = replace(original, root=restored[id(original.root)])
             remaining -= count
@@ -87,11 +119,16 @@ class PowerShellFrontend:
             if node.kind == "command_elements":
                 regions.append(node.span)
             elif node.kind == "ERROR":
-                candidates = [c for c in node.children if c.kind in {"pipeline", "command"}]
+                candidates = [c for c in node.children if c.kind in {"pipeline", "pipeline_chain", "command"}]
                 if candidates and candidates[0].span.start == node.span.start:
-                    commands = [candidates[0]]
-                    while commands and commands[0].kind != "command":
-                        commands = list(commands[0].children[:1])
+                    commands, stack = [], [candidates[0]]
+                    while stack:
+                        child = stack.pop()
+                        if child.kind == 'command':
+                            commands.append(child)
+                        else:
+                            stack.extend(child.children)
+                    commands.sort(key=lambda c: c.span.end, reverse=True)
                     if commands:
                         elements = next((c for c in commands[0].children if c.kind == "command_elements"), None)
                         if elements:

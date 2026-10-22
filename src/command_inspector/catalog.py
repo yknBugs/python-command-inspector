@@ -66,7 +66,7 @@ RULES = {
     "sql-privilege-change": ("sql", ("MEDIUM",), "Changes SQL privileges or account attributes."),
     "sql-create-identity": ("sql", ("MEDIUM",), "Creates a database, user, login or role."),
     "sql-drop-object": ("sql", ("HIGH",), "Drops whole tables, databases, users, logins or roles."),
-    "unknown-command": ("coverage", ("LOW",), "Command meaning is outside the supported models."),
+    "unknown-command": ("coverage", ("LOW", "HIGH"), "Command meaning is outside the supported models (LOW), or command-position text suggests a quoting or parsing issue (HIGH)."),
     "unknown-option": ("coverage", ("LOW",), "An option is not supported by the invocation model."),
     "unresolved-value": ("coverage", ("LOW",), "A runtime-dependent argument or path cannot be resolved."),
     "unsupported-syntax": ("coverage", ("LOW",), "Syntax is malformed or outside the implemented semantic subset."),
