@@ -32,6 +32,8 @@ class WindowsBuilder:
                 self.variables = {k: v if k in {'home', 'true', 'false', 'null'} else Value(None, 'trusted_script_state', (k,)) for k, v in self.variables.items()}
                 self.arrays = {}
             self.cwd = None
+            if hasattr(self, "location_stacks"):
+                self.location_stacks = None
         return fact
 
     def unresolved(self, reason, rule="unsupported-syntax", guard="", *, command_name=None, values=()):

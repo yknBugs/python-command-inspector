@@ -609,9 +609,11 @@
   "cwd": "/repo",
   "local_evidence": false,
   "expect": {
-   "rules": [],
-   "count": 0,
-   "level": "NONE"
+   "rules": [
+    "git-commit"
+   ],
+   "count": 1,
+   "level": "LOW"
   },
   "legacy": {
    "group": "must-flag",
@@ -1465,9 +1467,11 @@
   "cwd": "/repo",
   "local_evidence": false,
   "expect": {
-   "rules": [],
-   "count": 0,
-   "level": "NONE"
+   "rules": [
+    "git-commit"
+   ],
+   "count": 1,
+   "level": "LOW"
   },
   "legacy": {
    "group": "must-stay-quiet",
@@ -1501,9 +1505,11 @@
   "cwd": "/repo",
   "local_evidence": false,
   "expect": {
-   "rules": [],
-   "count": 0,
-   "level": "NONE"
+   "rules": [
+    "git-commit"
+   ],
+   "count": 1,
+   "level": "LOW"
   },
   "legacy": {
    "group": "must-stay-quiet",

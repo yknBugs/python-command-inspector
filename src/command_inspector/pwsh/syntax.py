@@ -1,37 +1,27 @@
 """In-process Windows syntax adapters; no shell subprocesses or Wine."""
 from dataclasses import replace
-import hashlib
 import re
 from ..models import ParsedSource, Span, SyntaxNode
 from ..bash.syntax import FrontendUnavailable, ParseBudgetExceeded
 
 
 _FOREACH_OBJECT_NAME = re.compile(r"foreach-object(?=$|[\s;|&>(){])", re.I)
-_NATIVE_EQUALS_ARG = re.compile(r'--[A-Za-z][A-Za-z0-9_-]*=[A-Za-z0-9_./:\\\\-]+(?=$|[\s|;>])')
+_NATIVE_EQUALS_ARG = re.compile(r'--[A-Za-z][A-Za-z0-9_-]*=[A-Za-z0-9_%./:\\\\-]+(?=$|[\s|;>])')
 _QUOTED_EQUALS_ARG = re.compile(r'''--[A-Za-z][A-Za-z0-9_-]*=(?:'(?:[^']|'')*'|"(?:[^"`$]|`.)*")(?=$|[\s|;>])''')
 
-def _ascii_fold(raw):
-    """Fold each non-ASCII character to equal-length text from its digest.
+def _identifier_parse_copy(raw):
+    """Use neutral ASCII identifier characters only in the parser's byte copy.
 
-    The vendored grammar accepts only ASCII identifiers, while PowerShell allows
-    Unicode letters in names, properties and hashtable keys. Keeping the byte
-    length lets the folded copy share every span with the original input. Each
-    character uses its own digest so the replacement cannot collide with
-    ordinary source text. Digest nibbles map onto 'a'-'p': letters only, so a
-    fold can never read as a number or carry a quote or separator the way raw
-    digest bytes could. 'z' pads a digest that is somehow too short.
+    This is not name mangling: conversion below reads *every* node's text from
+    the original source by byte span. Two placeholders may be identical without
+    merging their bindings, including when an ASCII name matches a placeholder.
+    Equal UTF-8 byte widths preserve offsets; punctuation and whitespace stay
+    untouched so this fallback cannot turn them into identifier characters.
     """
-    folded = []
-    for char in raw.decode("utf-8"):
-        if char < "\x80":
-            folded.append(char)
-            continue
-        encoded = char.encode("utf-8")
-        width = len(encoded)
-        digest = hashlib.sha256(encoded).digest()
-        letters = "".join(chr(97 + nibble) for byte in digest for nibble in (byte >> 4, byte & 15))
-        folded.append(letters[:width].ljust(width, "z"))
-    return "".join(folded).encode("utf-8")
+    return "".join(
+        "Z" * len(char.encode("utf-8")) if not char.isascii() and re.match(r"\w", char)
+        else char for char in raw.decode("utf-8")
+    ).encode("utf-8")
 
 
 def _error_nodes(node):
@@ -103,6 +93,10 @@ class PowerShellFrontend:
                         # subtree; use the proven parameter boundary, not the
                         # recovery ERROR node's parent or shape.
                         parse_text[parameter.span.end] = '_'
+                        native = _NATIVE_EQUALS_ARG.match(text, parameter.span.start)
+                        for offset in range(parameter.span.end + 1, native.end()):
+                            if text[offset] == '%':
+                                parse_text[offset] = '_'
                         command_names = True
             if node.kind == "ERROR":
                 if any(c.kind == 'command_name' for c in node.children):
@@ -118,14 +112,15 @@ class PowerShellFrontend:
                         and text[node.span.start - 1].isdigit()):
                     parse_text[node.span.start:node.span.end] = '0' * (node.span.end - node.span.start)
                     command_names = True
-                # A literal standalone '-' in command argument mode is rejected
+                # Literal standalone '-' and '--' in command argument mode are rejected
                 # by the grammar (python -, pwsh -Command -). Same-width masking
                 # recovers the command, without changing expression subtraction.
                 for index, child in enumerate(node.children):
-                    if (child.kind == "-" and child.text == "-" and index > 0
+                    if (child.kind in {"-", "--"} and child.text in {"-", "--"} and index > 0
+                            and (child.span.end == len(text) or text[child.span.end].isspace())
                             and node.children[index - 1].kind == "command_argument_sep"
                             and any(c.kind == "command_name" for c in node.children[:index])):
-                        parse_text[child.span.start] = "_"
+                        parse_text[child.span.start:child.span.end] = "_" * (child.span.end - child.span.start)
                         command_names = True
             pending.extend(node.children)
         remaining = max_nodes - count
@@ -272,7 +267,7 @@ class PowerShellFrontend:
         offsets.append(len(text))
         tree = self.parser.parse(raw)
         if tree.root_node.has_error:
-            folded = self.parser.parse(_ascii_fold(raw))
+            folded = self.parser.parse(_identifier_parse_copy(raw))
             if _error_nodes(folded.root_node) < _error_nodes(tree.root_node):
                 tree = folded
         pending, converted, diagnostics, count = [(tree.root_node, False)], {}, [], 0

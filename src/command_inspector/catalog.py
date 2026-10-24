@@ -53,9 +53,10 @@ RULES = {
     "raw-device-write": ("system", ("BLOCK",), "Writes a named raw disk device."),
     "unmount-drive": ("system", ("HIGH",), "Unmounts a filesystem."),
     "permissions-too-broad": ("filesystem", ("LOW",), "Grants mode 777 permissions."),
+    "git-commit": ("git", ("LOW",), "Creates a local Git commit."),
     "git-push": ("git", ("MEDIUM",), "Pushes commits to a remote."),
     "git-config-modified": ("git", ("LOW", "MEDIUM", "HIGH"), "Changes Git configuration: minor local LOW, minor global MEDIUM, important local MEDIUM, important global HIGH, sensitive HIGH in any scope."),
-    "git-history-rewrite": ("git", ("HIGH",), "Requests forced remote ref updates/deletion or explicit local history filtering."),
+    "git-history-rewrite": ("git", ("HIGH", "MEDIUM"), "Amends the current local commit (MEDIUM), or requests forced remote ref updates/deletion or explicit local history filtering (HIGH)."),
     "git-reset-state-unavailable": ("git", ("HIGH",), "A hard reset may discard work; read-only Git evidence is unavailable."),
     "docker-change": ("system", ("MEDIUM",), "Requests a noticeable Docker/container/resource effect without modeling daemon state."),
     "sql-unresolved": ("coverage", ("LOW",), "SQL source, syntax, dialect or statement meaning could not be resolved completely."),
@@ -88,6 +89,6 @@ def rule_catalog() -> dict:
     return {"version": CATALOG_VERSION, "schema_version": SCHEMA_VERSION, "rules": [
         {"rule": rule, "type": kind, "levels": list(levels), "description": description,
          "data_schema": {"type": "object"}, "evidence_schema": {"type": "array", "items": {"type": "object"}},
-         "introduced_in": "1.12.0" if rule in {"trusted-script-invoked", "environment-value-output"} else "1.10.0" if rule in {"credentials-exposed", "hardcoded-secret"} else "1.6.0" if rule in NEW_RULES_1_6 else "1.5.0" if rule == "tool-invoked" else "1.4.0" if rule in NEW_RULES_1_4 else "1.3.0" if rule in NEW_RULES_1_3 else "1.2.0" if rule in NEW_RULES_1_2 else "1.1.0" if rule in ADMIN_RULES else "1.0.0", "is_deprecated": False,
+         "introduced_in": "1.14.0" if rule == "git-commit" else "1.12.0" if rule in {"trusted-script-invoked", "environment-value-output"} else "1.10.0" if rule in {"credentials-exposed", "hardcoded-secret"} else "1.6.0" if rule in NEW_RULES_1_6 else "1.5.0" if rule == "tool-invoked" else "1.4.0" if rule in NEW_RULES_1_4 else "1.3.0" if rule in NEW_RULES_1_3 else "1.2.0" if rule in NEW_RULES_1_2 else "1.1.0" if rule in ADMIN_RULES else "1.0.0", "is_deprecated": False,
          "deprecated_in": None, "replaced_by": None}
         for rule, (kind, levels, description) in RULES.items()]}

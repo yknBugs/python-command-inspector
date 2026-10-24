@@ -128,9 +128,9 @@ def test_calculated_property_scriptblock_effects_are_still_inspected():
     assert 'delete-protected-root' in rules(analyze(source, 'powershell'))
 
 
-def test_trim_expression_coverage_is_not_suppressed_as_shell_stdout():
+def test_trim_expression_without_sensitive_consumer_is_quiet():
     result = analyze('(Get-Content x).Trim()', 'powershell', files={r'C:\work\x':'text'})
-    assert 'unresolved-value' in rules(result)
+    assert result == {}
 
 
 @pytest.mark.parametrize('name', ['llama[', 'llama]', 'name=value', 'foo:bar'])

@@ -223,8 +223,8 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.13.0",
-  "rule_catalog_version": "1.13.0",
+  "analyzer_version": "1.15.0",
+  "rule_catalog_version": "1.15.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -257,9 +257,10 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 
 ## 发现等级与规则家族
 
-规则目录共 **78 条规则、9 个类型**（`content`、`coverage`、`environment`、`execution`、
+规则目录共 **79 条规则、9 个类型**（`content`、`coverage`、`environment`、`execution`、
 `filesystem`、`git`、`network`、`sql`、`system`）。1.13.0 新增
-`trusted-script-invoked` 与 `environment-value-output`，均为 `LOW`。
+`trusted-script-invoked` 与 `environment-value-output`，均为 `LOW`；1.15.0 新增
+`git-commit`（`LOW`），并把 `git commit --amend` 报为 `MEDIUM` 的本地历史改写。
 
 | 等级 | 含义 |
 | --- | --- |

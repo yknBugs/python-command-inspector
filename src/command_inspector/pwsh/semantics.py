@@ -19,7 +19,7 @@ from ..shared.value_flow import value as abstract_value, join, join_maps, choice
 PS_ALIASES = {"rm": "remove-item", "del": "remove-item", "erase": "remove-item", "ri": "remove-item",
               "cat": "get-content", "gc": "get-content", "type": "get-content",
               "ls": "get-childitem", "dir": "get-childitem", "gci": "get-childitem",
-              "cd": "set-location", "sl": "set-location", "pwd": "get-location", "pushd": "push-location",
+              "cd": "set-location", "sl": "set-location", "pwd": "get-location", "pushd": "push-location", "popd": "pop-location",
               "cp": "copy-item", "copy": "copy-item", "cpi": "copy-item",
               "mv": "move-item", "move": "move-item", "mi": "move-item", "ren": "rename-item",
               "ni": "new-item", "spps": "stop-process", "sc": "set-content", "ac": "add-content", "echo": "write-output", "sleep": "start-sleep", "iwr": "invoke-webrequest", "irm": "invoke-restmethod", "iex": "invoke-expression"}
@@ -32,6 +32,7 @@ PS_OPTIONS = {
     "get-content": ({"raw", "wait"}, {"path", "literalpath", "encoding", "totalcount", "tail"}),
     "get-childitem": ({"recurse", "force", "name", "file", "directory"}, {"path", "literalpath", "filter"}),
     "set-location": ({"passthru"}, {"path", "literalpath"}),
+    "pop-location": ({"passthru"}, {"stackname"}),
     "push-location": ({"passthru"}, {"path", "literalpath", "stackname"}),
     "set-content": ({"force", "nonewline"}, {"path", "literalpath", "value", "encoding"}),
     "add-content": ({"force", "nonewline"}, {"path", "literalpath", "value", "encoding"}),
@@ -51,6 +52,7 @@ PS_OPTIONS = {
     "write-output": ({"noenumerate"}, {}),
     "restart-computer": ({"force", "wait", "whatif", "confirm"}, {"computername"}),
     "stop-computer": ({"force", "whatif", "confirm"}, {"computername"}),
+    "get-date": ({"asutc"}, {"date", "year", "month", "day", "hour", "minute", "second", "millisecond", "displayhint", "format", "uformat", "unixtimeseconds"}),
     "get-location": ({}, {}), "start-sleep": ({}, {"seconds", "milliseconds"}),
 }
 
@@ -109,6 +111,7 @@ class PowerShellBuilder(WindowsBuilder):
         self.failed = set()
         self.halted = False
         self.pending_cd = None
+        self.location_stacks = {}  # case-insensitive name -> tuple of saved cwd values, or unknown
         self.arrays = {}
         self.pipeline_input = None
         self.pipeline_values = None
@@ -173,7 +176,7 @@ class PowerShellBuilder(WindowsBuilder):
                 entries.append(key + ": " + value.text)
             return Value("\n".join(entries), "literal_mapping", tuple(sorted(variables)))
         # Grammar wrappers are transparent only when they contain one expression.
-        if node.kind not in {"generic_token", "command_name", "command_parameter", "expandable_string_literal", "variable", "integer_literal", "decimal_integer_literal"}:
+        if node.kind not in {"generic_token", "command_name", "command_parameter", "expandable_string_literal", "expandable_here_string_literal", "variable", "integer_literal", "decimal_integer_literal"}:
             named = [c for c in node.children if c.kind not in {"(", ")", '"', "command_argument_sep"}]
             if len(named) == 1:
                 return self.value(named[0])
@@ -246,7 +249,7 @@ class PowerShellBuilder(WindowsBuilder):
             body = next((c for c in node.children if c.kind == "statement_list"), None)
             return tuple(v for c in body.children if c.kind != "empty_statement" for v in self.values(c)) if body else ()
         named = [c for c in node.children if c.kind not in {"(", ")", '"', "command_argument_sep"}]
-        if len(named) == 1 and node.kind not in {"expandable_string_literal", "verbatim_string_characters", "generic_token", "variable"}:
+        if len(named) == 1 and node.kind not in {"expandable_string_literal", "expandable_here_string_literal", "verbatim_string_characters", "generic_token", "variable"}:
             return self.values(named[0])
         return (self.value(node),)
 
@@ -265,10 +268,11 @@ class PowerShellBuilder(WindowsBuilder):
         return tuple(self.facts)
 
     def snapshot(self):
-        return (dict(self.variables), dict(self.arrays), dict(self.env), self.cwd, set(self.failed), self.halted, self.pending_cd)
+        return (dict(self.variables), dict(self.arrays), dict(self.env), self.cwd, set(self.failed), self.halted, self.pending_cd, None if self.location_stacks is None else dict(self.location_stacks))
 
     def restore(self, state):
-        variables, arrays, env, self.cwd, failed, self.halted, self.pending_cd = state
+        variables, arrays, env, self.cwd, failed, self.halted, self.pending_cd, stacks = state
+        self.location_stacks = None if stacks is None else dict(stacks)
         self.variables, self.arrays, self.env, self.failed = dict(variables), dict(arrays), dict(env), set(failed)
 
     def merge_states(self, states):
@@ -276,6 +280,12 @@ class PowerShellBuilder(WindowsBuilder):
         self.env = join_maps([s[2] for s in states], self.limit, strings=True)
         self.arrays = {k: v for k, v in states[0][1].items() if all(s[1].get(k) == v for s in states)}
         self.cwd = states[0][3] if all(s[3] == states[0][3] for s in states) else None
+        if any(s[7] is None for s in states):
+            self.location_stacks = None
+        else:
+            keys = set().union(*(s[7] for s in states))
+            self.location_stacks = {k: states[0][7].get(k, ()) if all(
+                s[7].get(k, ()) == states[0][7].get(k, ()) for s in states) else None for k in keys}
         self.failed = set().union(*(s[4] for s in states))
         self.halted = all(s[5] for s in states)
         self.pending_cd = states[0][6] if all(s[6] == states[0][6] for s in states) else None
@@ -315,13 +325,17 @@ class PowerShellBuilder(WindowsBuilder):
                 self.scan_subexpressions(right, guard)
                 self.unresolved('Console encoding assignment is outside the supported forms', guard=guard)
                 return
+            # The RHS is a full pipeline, not just a value expression. Walk it
+            # once even when the destination cannot be tracked (or is readonly).
+            right = node.children[-1]
+            self.walk(right, guard)
             if left is None or not re.fullmatch(r"\$(?:env:)?\w+", left.text, re.I):
+                if left is not None:
+                    self.scan_subexpressions(left, guard)
                 self.unresolved("Assignment target is outside the supported variable forms", guard=guard)
                 return
             name = left.text[1:].casefold()
             operator = next((c.text for c in node.children if c.kind == "assignement_operator"), "")
-            right = node.children[-1]
-            self.scan_subexpressions(right, guard)
             values = self.values(right)
             value = values[0] if len(values) == 1 else Value(None, "array_binding")
             if operator != "=":
@@ -450,13 +464,14 @@ class PowerShellBuilder(WindowsBuilder):
             for child in node.children:
                 self.scan_subexpressions(child, guard, skip_script_blocks=True)
             return
-        if node.kind in {"sub_expression", "sub_expression_body", "invokation_expression", "array_expression", "script_block_expression"}:
+        if node.kind in {"pipeline", "assignment_expression", "command", "sub_expression", "sub_expression_body", "invokation_expression", "array_expression", "script_block_expression"}:
             self.walk(node, "during expression evaluation")
             return
         for child in node.children:
             self.scan_subexpressions(child, guard, skip_script_blocks=skip_script_blocks)
 
     def widen_loop(self):
+        self.location_stacks = None
         self.variables = {name: binding if name in {"home", "true", "false", "null"} else Value(None, "control_flow_limit", (name,)) for name, binding in self.variables.items()}
         self.env = {name: Value(None, "control_flow_limit", ("env:" + name,)) for name in self.env}
         self.arrays = {}
@@ -882,7 +897,37 @@ class PowerShellBuilder(WindowsBuilder):
             if bound.keys() & {"filter", "include", "exclude"} or flags & {"file", "directory", "recurse"}:
                 read_flags.add("selection_unmodeled")
             self.filesystem("read", "ingest" if name == "get-content" else "list", values, flags=read_flags, guard=guard)
+        elif name == "pop-location":
+            stack_name = bound.get("stackname", Value("")).text
+            if unknown or positional or stack_name is None or any(c in stack_name for c in "*?["):
+                self.location_stacks = None
+                self.cwd, self.pending_cd = None, None
+                self.unresolved("Location stack selection is unresolved", "unresolved-value", guard)
+                return
+            key = stack_name.casefold()
+            stack = self.location_stacks.get(key, ()) if self.location_stacks is not None else None
+            if stack is None:
+                self.cwd, self.pending_cd = None, None
+                self.unresolved("Location stack contents are unresolved", "unresolved-value", guard)
+            elif stack:
+                self.location_stacks[key] = stack[:-1]
+                self.pending_cd = stack[-1]
+                # Restoration can fail (e.g. the saved directory was removed).
+                if self.cwd is None or self.pending_cd is None or self.paths.key(self.cwd) != self.paths.key(self.pending_cd):
+                    self.cwd = None
+            # An empty stack cannot change the current location.
         elif name in {"set-location", "push-location"}:
+            if name == "push-location":
+                stack_name = bound.get("stackname", Value("")).text
+                if unknown or stack_name is None or any(c in stack_name for c in "*?["):
+                    self.location_stacks = None
+                elif self.location_stacks is not None:
+                    key = stack_name.casefold()
+                    stack = self.location_stacks.get(key, ())
+                    self.location_stacks[key] = (*stack, self.cwd) if stack is not None and len(stack) < self.flow_steps else None
+            elif unknown:
+                # Unsupported stack-selection forms may change the default stack.
+                self.location_stacks = None
             self.filesystem("read", "list", values, guard=guard)
             # A standalone Set-Location can fail and still allow continuation.
             self.pending_cd = self.paths.resolve(path, self.cwd)

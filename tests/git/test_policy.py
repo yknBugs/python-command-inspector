@@ -123,3 +123,49 @@ def test_git_config_override_uses_child_environment(prefix, level):
     finding = one(analyze(prefix + "git config user.name Example"), "git-config-modified", level)
     assert finding.data["scope"] == ("file" if level == "HIGH" else "local")
 
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('command', [
+    'git add -A', 'git status --short --ignored', 'git log --format=%h -10',
+    'git diff --numstat', 'git show --stat HEAD', 'git branch --show-current',
+    'git ls-tree -r --name-only HEAD', 'git ls-remote --heads origin',
+    'git grep -n -e pattern -- src', 'git ls-files --others --exclude-standard',
+    'git cat-file -p HEAD', 'git rev-parse --show-toplevel',
+    'git rev-list --count HEAD', 'git merge-base --is-ancestor main HEAD',
+    'git check-ignore -v file',
+])
+def test_requested_git_queries_and_staging_are_quiet(shell, command):
+    assert analyze(command, shell).to_dict() == {}
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('args', ['', '-am "message"', '-ammessage', '-F -', '--file=-',
+                                  '-m --amend', '--message=--amend', '-- --amend'])
+def test_commit_is_low_and_message_text_is_not_an_option(shell, args):
+    result = analyze('git commit ' + args, shell)
+    one(result, 'git-commit', 'LOW')
+    assert result.num_findings == 1
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('args', ['--amend', '--amend --no-edit', '--amend -am "fix"', '--amend -F -'])
+def test_amend_is_medium_local_history_rewrite(shell, args):
+    result = analyze('git commit ' + args, shell)
+    assert result.num_findings == 1
+    assert one(result, 'git-history-rewrite', 'MEDIUM').data['history_scope'] == 'local'
+
+
+@pytest.mark.parametrize('shell', SHELLS)
+@pytest.mark.parametrize('args', ['--dry-run --amend', '--short', '--porcelain', '--help'])
+def test_commit_previews_are_quiet(shell, args):
+    assert analyze('git commit ' + args, shell).to_dict() == {}
+
+
+def test_quiet_git_does_not_hide_shell_effects():
+    assert 'delete-protected-root' in {f.rule for f in analyze('git status; rm -rf /etc').findings}
+    assert 'write-outside-workspace' in {f.rule for f in analyze('git diff > /outside/out.txt').findings}
+
+
+def test_commit_unknown_option_keeps_coverage():
+    assert 'unknown-option' in {f.rule for f in analyze('git commit --not-real').findings}

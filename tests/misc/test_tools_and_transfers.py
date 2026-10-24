@@ -119,7 +119,7 @@ def test_tools_keep_distinct_identity_and_hide_arguments():
     assert {f.data["tool"] for f in entries(report, "tool-invoked")} == {"ufw", "crontab", "passwd"}
     assert "abcdefghijk" not in json.dumps(report.to_dict())
     catalog = Analyzer.rule_catalog()
-    assert catalog["version"] == "1.13.0"
+    assert catalog["version"] == "1.15.0"
     rule, = [r for r in catalog["rules"] if r["rule"] == "tool-invoked"]
     assert rule["introduced_in"] == "1.5.0"
     assert rule["levels"] == ["MEDIUM"]

@@ -24,11 +24,14 @@ def describe_method(builder, node, guard):
     type_name = receiver.text.strip('[]').casefold() if receiver and receiver.kind == 'type_literal' else None
     if type_name and type_name.startswith('system.'):
         type_name = type_name[7:]
+    if type_name == 'regex':
+        type_name = 'text.regularexpressions.regex'
     if member == 'frombase64string':
         builder.emit('content', 'encoded-command', guard=guard)
         builder.unresolved('Decoded method result is outside the supported subset', guard=guard)
         return
     pure_static = {
+        'text.regularexpressions.regex': {'matches', 'match', 'ismatch'},
         'math': {'abs', 'round', 'floor', 'ceiling', 'min', 'max', 'pow', 'sqrt', 'sign', 'truncate', 'log', 'log10', 'exp', 'sin', 'cos', 'tan'},
         'string': {'isnullorempty', 'isnullorwhitespace', 'join', 'format', 'concat', 'compare', 'equals'},
         'io.path': {'combine', 'join', 'getfilename', 'getfilenamewithoutextension', 'getextension', 'getdirectoryname', 'getfullpath', 'ispathrooted', 'ispathfullyqualified', 'getrelativepath', 'changeextension', 'getinvalidfilenamechars', 'getinvalidpathchars'},
@@ -75,13 +78,10 @@ def describe_method(builder, node, guard):
         builder.unresolved('Started process content is unavailable', 'execution-content-unavailable', guard, values=values)
         return
     pure_string = {'trim', 'trimstart', 'trimend', 'split', 'replace', 'toupper', 'tolower', 'toupperinvariant', 'tolowerinvariant', 'substring', 'contains', 'startswith', 'endswith', 'indexof', 'lastindexof', 'padleft', 'padright', 'tochararray', 'tostring', 'gettype'}
-    def string_receiver(item):
-        if item.kind != 'invokation_expression':
-            return builder.value(item).text is not None
-        inner_member = next((c.text.casefold() for c in item.children if c.kind == 'member_name'), '')
-        returns_string = {'trim', 'trimstart', 'trimend', 'replace', 'toupper', 'tolower', 'toupperinvariant', 'tolowerinvariant', 'substring', 'padleft', 'padright', 'tostring'}
-        return inner_member in returns_string and bool(item.children) and string_receiver(item.children[0])
-    if type_name is None and receiver and string_receiver(receiver) and member in pure_string:
+    # Display-oriented string transformations do not require a concrete value.
+    # The result stays unresolved; path/execution consumers diagnose it there.
+    # Receiver and argument effects have already been inspected above.
+    if type_name is None and receiver and member in pure_string:
         return
     builder.unresolved('Method receiver or operation is unresolved: '+member, 'unresolved-value', guard,
                        values=(*values, builder.value(receiver)) if receiver else values)

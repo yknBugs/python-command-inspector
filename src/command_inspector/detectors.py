@@ -272,7 +272,7 @@ class DetectorContext:
                     language = self.interpreter_language(fact.operation)
                     options, unknown, _ = split_interpreter_args([v.text for v in fact.values], language)
                     code = next((value for _, kind, value in options if kind == 'code'), None)
-                    if not unknown and code is not None:
+                    if not unknown and code is not None and not any(kind == 'check' for _, kind, _ in options):
                         children = (replace(fact, kind='inline', operation=language, payload=code, source=fact.source + ':inline'),)
                 elif fact.kind == "inline" and fact.payload is not None:
                     from .pwsh.semantics import PowerShellBuilder
@@ -560,7 +560,7 @@ class DetectorContext:
                               {"keys": list(fact.targets), "scope": scope, "importance": importance,
                                "action": fact.payload or "set"}, level=level)
                     continue
-                titles = {"git-push": "Pushes commits to a remote", "git-config-modified": "Changes Git configuration",
+                titles = {"git-commit": "Creates a local Git commit", "git-push": "Pushes commits to a remote", "git-config-modified": "Changes Git configuration",
                           "git-history-rewrite": "Rewrites or deletes remote Git refs" if "remote_history" in fact.flags else "Rewrites local Git history",
                           "docker-change": "Changes Docker resources: " + (fact.payload or "update"),
                           "git-reset-state-unavailable": "Hard reset may discard local work; repository state is unavailable",
@@ -584,7 +584,8 @@ class DetectorContext:
                     data["history_scope"] = "remote" if "remote_history" in fact.flags else "local"
                     data["refspecs"] = [v.text for v in fact.values]
                     data["options"] = sorted(f for f in fact.flags if f.startswith("-"))
-                self.emit(fact.operation, titles.get(fact.operation, ADMIN_RULES.get(fact.operation, (None, fact.operation))[1]), fact, data)
+                level = Level.MEDIUM if fact.operation == "git-history-rewrite" and "commit_amend" in fact.flags else None
+                self.emit(fact.operation, titles.get(fact.operation, ADMIN_RULES.get(fact.operation, (None, fact.operation))[1]), fact, data, level=level)
             elif fact.kind == "device":
                 for path in fact.targets:
                     if raw_device(path):
@@ -1080,6 +1081,22 @@ class DetectorContext:
                 path = self.resolve_path(fact.values[0], cwd) if fact.values else None
                 self.inspect_file(fact, path, fact.operation, cwd, depth)
             return
+        if fact.operation == "node":
+            options, unknown, operand_start = split_interpreter_args([v.text for v in fact.values], "javascript")
+            if not unknown and any(kind == 'check' for _, kind, _ in options):
+                operands = fact.values[operand_start:]
+                # Syntax checking reads the target but does not execute its body.
+                # In particular, do not inspect stdin/inline data as running code.
+                if operands and operands[0].text != '-':
+                    path = self.resolve_path(operands[0], cwd)
+                    self.read(replace(fact, kind='read', operation='list', values=(operands[0],),
+                                      targets=(path,) if path else ()))
+                preload = any(option in {'-r', '--require', '--import'} for option, _, _ in options)
+                node_options = any((key == 'NODE_OPTIONS' if fact.shell == 'bash' else key.casefold() == 'node_options')
+                                   and value for key, value in fact.bindings)
+                if preload or node_options:
+                    self.emit('execution-content-unavailable', 'Node startup options may load code during syntax checking', fact)
+                return
         if fact.operation != "artifact":
             # Reported before any stdin handling: a here-document program is still
             # an interpreter invocation, and a benign one is LOW rather than silent.
@@ -1098,6 +1115,8 @@ class DetectorContext:
         if unknown:
             self.emit("execution-content-unavailable", "Unsupported interpreter options leave its code target unresolved", fact)
             return
+        if language == 'javascript' and any(option in {'-r', '--require', '--import'} for option, _, _ in options):
+            self.emit('execution-content-unavailable', 'Node startup preload content is outside the inspected entry point', fact)
         for option, kind, value in options:
             if kind == "code":
                 if value is None:

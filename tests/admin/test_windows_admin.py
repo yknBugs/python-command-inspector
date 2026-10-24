@@ -100,7 +100,7 @@ def test_nonrecursive_root_glob_not_recursive_delete():
 
 def test_catalog_additions_have_correct_introduction_version():
     catalog = Analyzer().rule_catalog()
-    assert catalog['version'] == '1.13.0'
+    assert catalog['version'] == '1.15.0'
     versions = {r['rule']: r['introduced_in'] for r in catalog['rules']}
     assert versions['volume-format'] == '1.1.0'
     assert versions['service-change'] == '1.0.0'

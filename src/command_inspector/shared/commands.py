@@ -172,7 +172,7 @@ INTERPRETER_OPTIONS: dict[str, dict[str, str]] = {
                "-S": "flag", "-v": "flag", "-V": "flag", "--version": "flag",
                "-h": "flag", "--help": "flag", "-W": "value", "-X": "value",
                "--check-hash-based-pycs": "value"},
-    "javascript": {"-e": "code", "--eval": "code", "-p": "code", "--print": "code",
+    "javascript": {"-c": "check", "--check": "check", "--import": "value", "-e": "code", "--eval": "code", "-p": "code", "--print": "code",
                    "-r": "value", "--require": "value", "-v": "flag",
                    "--version": "flag", "-h": "flag", "--help": "flag"},
 }

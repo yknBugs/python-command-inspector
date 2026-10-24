@@ -37,11 +37,9 @@ def test_visible_loop_body_uses_existing_deletion_rules(name, prefix):
 
 
 @pytest.mark.parametrize('body', ['', 'Write-Output $_', '$_.Name', 'Write-Output $PSItem'])
-def test_readonly_body_retains_only_the_bash_style_loop_notice(body):
+def test_readonly_body_does_not_require_iteration_count(body):
     result = analyze('Get-ChildItem | ForEach-Object {' + body + '}')
-    assert rules(result) == {'unsupported-syntax'}
-    assert result.level == Level.LOW
-    assert result.findings[0].title == 'Loop iteration counts are not modeled'
+    assert result.to_dict() == {}
 
 
 @pytest.mark.parametrize('name', ['_', 'PSItem', '{_}', '{PSItem}'])
@@ -206,7 +204,7 @@ def test_explicit_null_begin_end_preserve_all_process_blocks(argument):
 
 @pytest.mark.parametrize('source', ['ForEach-Object -Process $null', 'ForEach-Object -Process @()'])
 def test_null_and_empty_process_arguments_do_not_invent_unavailable_code(source):
-    assert rules(analyze(source)) == {'unsupported-syntax'}
+    assert analyze(source).to_dict() == {}
 
 
 @pytest.mark.parametrize('argument', [
@@ -436,14 +434,8 @@ def test_do_loop_in_pipeline_loop_preserves_outer_guard():
     '1..3', '3..1', '1..-3', '-2..2', '1 .. 3', '(1..3)', '$a..$b',
     '1..2147483647', '@(1..3)', '@(1,2,3)',
 ])
-def test_runtime_range_keeps_coverage_notice_but_literal_array_is_known(expression):
-    result = analyze(expression + ' | ForEach-Object { $_ }')
-    if expression == '@(1,2,3)':
-        assert result.to_dict() == {}
-        return
-    assert rules(result) == {'unsupported-syntax'}
-    assert result.findings[0].title == 'Loop iteration counts are not modeled'
-    assert result.level == Level.LOW
+def test_runtime_range_output_does_not_require_iteration_count(expression):
+    assert analyze(expression + ' | ForEach-Object { $_ }').to_dict() == {}
 
 
 @pytest.mark.parametrize('source', [

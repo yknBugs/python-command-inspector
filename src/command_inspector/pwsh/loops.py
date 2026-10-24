@@ -51,13 +51,14 @@ def describe_foreach_object(builder, positional, bound, flags, guard):
     before_variables, before_arrays = dict(builder.variables), dict(builder.arrays)
     before_env, before_cwd = dict(builder.env), builder.cwd
     before_failed, before_halted = set(builder.failed), builder.halted
+    before_stacks = None if builder.location_stacks is None else dict(builder.location_stacks)
     before_input = builder.pipeline_input
     incoming = builder.pipeline_values
     if "inputobject" in bound:
         incoming = tuple(v for node in bound["inputobject"] for v in builder.values(node))
     iteration = join(incoming, builder.limit) if incoming is not None else Value(None)
-    if iteration.text is None and not iteration.alternatives:
-        builder.unresolved("Loop iteration counts are not modeled", guard=guard)
+    unknown_iterations = iteration.text is None and not iteration.alternatives
+    body_start = len(builder.facts)
 
     phases = {"begin": [], "process": [], "end": []}
     parallel = "parallel" in bound
@@ -139,9 +140,12 @@ def describe_foreach_object(builder, positional, bound, flags, guard):
         # Ordinary assignments and Set-Location in a runspace do not bind the caller.
         builder.variables, builder.arrays = before_variables, before_arrays
         builder.cwd, builder.failed = before_cwd, before_failed
+        builder.location_stacks = before_stacks
         builder.env = {k: v for k, v in before_env.items() if builder.env.get(k) == v}
     else:
         merge_bindings(builder, before_variables, before_arrays, before_env, before_cwd)
+    if unknown_iterations and any(f.kind != 'output' for f in builder.facts[body_start:]):
+        builder.unresolved("Loop iteration counts are not modeled", guard=guard)
     builder.halted, builder.pipeline_input = before_halted, before_input
     # Success of this cmdlet does not prove an earlier piped Set-Location worked.
     builder.pending_cd = None

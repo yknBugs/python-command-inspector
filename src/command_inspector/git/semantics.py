@@ -38,6 +38,20 @@ CLONE_FLAGS = {"--local", "--no-local", "--no-hardlinks", "--shared", "--dissoci
                "--also-filter-submodules", "--reject-shallow", "--no-reject-shallow", "--help", "-h", "--ipv4", "--ipv6"}
 
 
+QUIET_SUBCOMMANDS = {
+    "add", "status", "log", "diff", "show", "branch", "ls-tree", "ls-remote",
+    "grep", "ls-files", "cat-file", "rev-parse", "rev-list", "merge-base", "check-ignore",
+}
+COMMIT_VALUES = {"-m", "--message", "-F", "--file", "-C", "--reuse-message", "-c", "--reedit-message",
+                 "--author", "--date", "--fixup", "--squash", "--cleanup", "-t", "--template",
+                 "--trailer", "--pathspec-from-file"}
+COMMIT_FLAGS = {"--all", "--amend", "--no-edit", "--edit", "--no-verify", "--verify", "--signoff",
+                "--no-signoff", "--allow-empty", "--allow-empty-message", "--reset-author", "--dry-run",
+                "--short", "--porcelain", "--long", "--branch", "--null", "--verbose", "--quiet",
+                "--interactive", "--patch", "--include", "--only", "--status", "--no-status",
+                "--no-post-rewrite", "--pathspec-file-nul", "--no-gpg-sign", "--help", "-h"}
+
+
 def _options(args, valued, switches, short=""):
     """Retain unresolved operands, consume option values, and honor the delimiter."""
     operands, flags, bound, unknown = [], set(), {}, []
@@ -250,6 +264,20 @@ def describe_git(args, cwd, flag_known, *, shell="bash"):
         return facts + _config(tail)
     if sub == "clone":
         return facts + _clone(tail, clone_cwd, shell)
+    if sub in QUIET_SUBCOMMANDS:
+        # These subcommands are intentionally quiet at the Git policy layer.
+        # Shell substitutions, redirections and other outer effects still apply.
+        return facts
+    if sub == "commit":
+        operands, flags, bound, unknown = _options(tail, COMMIT_VALUES, COMMIT_FLAGS, "avqnespioz")
+        facts.extend(Fact("unresolved", "unknown-option", payload=w) for w in unknown)
+        if flags & {"--dry-run", "--short", "--porcelain", "--long", "--help", "-h"}:
+            return facts
+        amend = "--amend" in flags
+        facts.append(Fact("git", "git-history-rewrite" if amend else "git-commit",
+                          (clone_cwd,) if clone_cwd else (),
+                          flags=frozenset({"local_history", "commit_amend", "--amend"}) if amend else frozenset()))
+        return facts
     if sub == "push":
         operands, flags, bound, unknown = _options(tail, PUSH_VALUES, PUSH_FLAGS, "nfduvq46o")
         facts.extend(Fact("unresolved", "unknown-option", payload=w) for w in unknown)
@@ -271,7 +299,9 @@ def describe_git(args, cwd, flag_known, *, shell="bash"):
         if any(v.text is None for v in operands):
             facts.append(Fact("unresolved", "unresolved-value", payload="Git push remote or refspec is unresolved"))
         return facts
-    if any(v.text in {"--help", "-h"} for v in tail):
+    delimiter = next((i for i, value in enumerate(tail) if value.text == "--"), len(tail))
+    option_tail = tail[:delimiter]
+    if any(v.text in {"--help", "-h"} for v in option_tail):
         return facts
     if sub == "filter-branch":
         facts.append(Fact("git", "git-history-rewrite", (cwd,) if cwd else (), flags=frozenset({"local_history"})))
@@ -281,12 +311,14 @@ def describe_git(args, cwd, flag_known, *, shell="bash"):
             facts.append(Fact("git", "git-config-modified", flags=frozenset({"scope:local", "important"}), payload=operation))
         elif operation not in {None, "show", "get-url", "-v", "--verbose"}:
             facts.append(Fact("unresolved", "unknown-command", payload="Unsupported Git remote operation"))
-    elif sub == "reset" and any(v.text == "--hard" for v in tail):
+    elif sub == "reset" and any(v.text == "--hard" for v in option_tail):
         facts.append(Fact("git", "git-reset-state-unavailable", (cwd,) if cwd else ()))
     elif sub not in {"merge-tree", "status", "diff", "log", "show", "add", "commit", "reset", "branch", "switch",
                      "checkout", "fetch", "pull", "stash", "tag", "worktree"}:
         facts.append(Fact("unresolved", "unknown-command", payload="Unsupported Git subcommand"))
     for value in tail:
+        if value.text == "--":
+            break
         if value.text and value.text.startswith("-") and not flag_known(value.text):
             facts.append(Fact("unresolved", "unknown-option", payload=value.text.split("=", 1)[0]))
     return facts

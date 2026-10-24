@@ -235,8 +235,8 @@ Every non-empty report conforms to the bundled `schemas/report.json` (JSON Schem
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.13.0",
-  "rule_catalog_version": "1.13.0",
+  "analyzer_version": "1.15.0",
+  "rule_catalog_version": "1.15.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -270,9 +270,10 @@ Every non-empty report conforms to the bundled `schemas/report.json` (JSON Schem
 
 ## Finding levels and rule families
 
-The catalog contains **78 rules across 9 types** (`content`, `coverage`, `environment`,
+The catalog contains **79 rules across 9 types** (`content`, `coverage`, `environment`,
 `execution`, `filesystem`, `git`, `network`, `sql`, `system`). Version 1.13.0 adds
-`trusted-script-invoked` and `environment-value-output`, both `LOW`.
+`trusted-script-invoked` and `environment-value-output`, both `LOW`; 1.15.0 adds
+`git-commit` (`LOW`) and reports `git commit --amend` as a `MEDIUM` local history rewrite.
 
 | Level | Meaning |
 | --- | --- |
