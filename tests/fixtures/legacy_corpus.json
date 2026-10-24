@@ -1874,11 +1874,9 @@
   "cwd": "/srv/app",
   "local_evidence": false,
   "expect": {
-   "rules": [
-    "unresolved-value"
-   ],
-   "count": 1,
-   "level": "LOW"
+   "rules": [],
+   "count": 0,
+   "level": "NONE"
   },
   "legacy": {
    "group": "must-stay-quiet",

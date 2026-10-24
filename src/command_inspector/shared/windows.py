@@ -6,14 +6,16 @@ from .value_flow import DEFAULT_LIMIT, ValueLimits, bounded_arguments
 
 
 class WindowsBuilder:
-    def __init__(self, cwd, env, *, shell, source="command", context="invoked_now", possible_values=DEFAULT_LIMIT, control_flow_steps=256, value_bytes=524288):
+    def __init__(self, cwd, env, *, shell, source="command", context="invoked_now", possible_values=DEFAULT_LIMIT, control_flow_steps=256, value_bytes=524288, trusted_scripts=()):
         self.limit = ValueLimits(possible_values, value_bytes)
         self.flow_steps = control_flow_steps
         self.choice_serial = 0
         self.cwd, self.env = cwd, {k.casefold(): v for k, v in env.items()}
+        self.input_environment = set(self.env)
         self.paths = style_for(shell, cwd or "C:\\")
         self.shell, self.source, self.context = shell, source, context
         self.facts = []
+        self.trusted_scripts = {self.paths.key(p) for p in trusted_scripts}
 
     def emit(self, kind, operation, values=(), flags=(), payload=None, guard="", targets=None, *, unresolved_variables=()):
         values = bounded_arguments(values, self.limit)
@@ -23,6 +25,13 @@ class WindowsBuilder:
                     payload=payload, guard=guard, source=self.source, context=self.context,
                     cwd=self.cwd, bindings=tuple(self.env.items()), shell=self.shell, unresolved_variables=tuple(unresolved_variables))
         self.facts.append(fact)
+        if kind == 'execute' and 'direct_source' in flags and any(self.paths.key(p) in self.trusted_scripts for p in targets):
+            # Skipped source cannot establish the parent's resulting state.
+            self.env = {k: Value(None, 'trusted_script_state', (k,)) for k in self.env}
+            if hasattr(self, 'variables'):
+                self.variables = {k: v if k in {'home', 'true', 'false', 'null'} else Value(None, 'trusted_script_state', (k,)) for k, v in self.variables.items()}
+                self.arrays = {}
+            self.cwd = None
         return fact
 
     def unresolved(self, reason, rule="unsupported-syntax", guard="", *, command_name=None, values=()):

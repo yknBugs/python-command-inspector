@@ -6,7 +6,7 @@ from .models import AnalysisReport, Finding
 SECRET_PATTERNS = (
     re.compile(r"\b(?:AKIA|ASIA)[A-Z0-9]{16}\b"),
     re.compile(r"gh[pousr]_[A-Za-z0-9]{20,}"),
-    re.compile(r"sk-[A-Za-z0-9_-]{20,}"),
+    re.compile(r"sk-[A-Za-z0-9_-]{14,}"),
     re.compile(r"(?i)\b(?:password|passwd|api[_-]?key|access[_-]?token|secret)\s*[:=]\s*['\"]?([^\s'\";,]+)"),
     re.compile(r"(?i)\b(?:bearer|basic)\s+[A-Za-z0-9+/=_-]{8,}"),
 )

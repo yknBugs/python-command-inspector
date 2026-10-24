@@ -81,7 +81,7 @@ def command_registry() -> CommandRegistry:
     # Keep shell support explicit: recognizing a Unix builtin does not make it
     # available as a native command in a Windows shell.
     common_names = (set(SPECS) | INTERPRETERS | TASKS | NETWORK_SINKS |
-                    {"echo", "printf", "true", "false", ":", "reboot", "shutdown", "poweroff", "halt", "umount", "scp", "rsync", "dd"})
+                    {"test", "[", "echo", "printf", "true", "false", ":", "reboot", "shutdown", "poweroff", "halt", "umount", "scp", "rsync", "dd"})
     native_common = {"npm", "pnpm", "yarn", "twine", "pip", "pip3", "pytest", "make", "python", "python3", "node", "curl", "wget", "scp", "rsync", *NETWORK_SINKS}
     return CommandRegistry((
         CommandModel({"git"}, git),

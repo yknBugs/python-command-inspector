@@ -168,7 +168,7 @@ def test_non_success_redirections_do_not_hide_read_content(shell, command):
 @pytest.mark.parametrize('shell,command', [('powershell', 'Get-Content secret *> $null'), ('cmd', 'type secret >NUL 2>&1'), ('cmd', 'type secret 2>NUL 1>&2')])
 def test_all_output_discarded(shell, command):
     report = analyze(command, shell, files={CWD + r'\secret': 'password=abcdefghijk'})
-    assert rules(report) == ['errors-suppressed']
+    assert rules(report) == ['credentials-read', 'errors-suppressed']
 
 
 @pytest.mark.parametrize('command', ['Stop-Service Demo', 'Restart-Service Demo', 'Set-Service Demo -StartupType Disabled', 'Start-ScheduledTask -TaskName Demo', 'Stop-ScheduledTask -TaskName Demo', 'Unregister-ScheduledTask -TaskName Demo -Confirm:$false'])

@@ -330,7 +330,7 @@ def test_disabled_evidence_and_rule_disabling():
 
 def test_catalog_path_rules_are_low_and_introduced_in_1_6():
     catalog = Analyzer.rule_catalog()
-    assert catalog["version"] == "1.11.0"
+    assert catalog["version"] == "1.13.0"
     for rule in catalog["rules"]:
         if rule["rule"] in PATH_RULES:
             assert rule["levels"] == ["LOW"]
@@ -340,7 +340,7 @@ def test_catalog_path_rules_are_low_and_introduced_in_1_6():
 def test_package_report_and_catalog_versions_match():
     project = tomllib.loads((Path(__file__).parents[2] / "pyproject.toml").read_text())
     report, _ = analyze("./program")
-    assert project["project"]["version"] == report.analyzer_version == report.rule_catalog_version == "1.11.0"
+    assert project["project"]["version"] == report.analyzer_version == report.rule_catalog_version == "1.13.0"
 
 
 @pytest.mark.parametrize("shell,command", [

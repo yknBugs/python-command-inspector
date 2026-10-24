@@ -15,6 +15,8 @@ def suspicious_command_name(name: str | None, shell: str) -> str | None:
     # Preserve ordinary executable paths, including spaces and punctuation in
     # directory/file names. A slash in source code alone is not a path prefix.
     windows = shell in {"powershell", "cmd"}
+    if windows and re.match(r'^[A-Za-z_][\w.-]*:(?:[/\\]|$)', name):
+        return None
     if (name.startswith(("/", "./", "../"))
             or windows and (name.startswith(("\\", ".\\", "..\\"))
                             or re.match(r"^[A-Za-z]:", name))
@@ -22,8 +24,8 @@ def suspicious_command_name(name: str | None, shell: str) -> str | None:
         return None
     if any(c.isspace() for c in name):
         return "whitespace_in_command_name"
-    if any(c in name for c in "\"'`;|&<>(){}"):
+    if any(c in name for c in "\"'`;|&<>(){}[]:="):
         return "syntax_in_command_name"
-    if not any(c.isalnum() or c == "_" for c in name):
+    if not any(c.isalnum() or c == "_" for c in name) and not all(c in '$%!^~@*?' for c in name):
         return "no_identifier_characters"
     return None

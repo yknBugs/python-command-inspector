@@ -92,11 +92,11 @@ def test_quoted_wildcard_is_literal():
     assert result["findings"][0]["data"]["target"] == "/work/*"
 
 
-def test_read_redirected_to_file_does_not_enter_model_context():
+def test_read_redirected_to_file_still_checks_source_credentials():
     provider = MemoryEvidenceProvider({"/work/secret": "password=very-secret"})
     result = Analyzer(evidence=provider).analyze("cat secret > copy", "/work", shell="bash")
-    assert "credentials-read" not in rules(result)
-    assert not any(isinstance(q, ReadFile) for q in provider.queries)
+    assert "credentials-read" in rules(result)
+    assert any(isinstance(q, ReadFile) for q in provider.queries)
 
 
 def test_python_syntax_error_at_write_boundary():

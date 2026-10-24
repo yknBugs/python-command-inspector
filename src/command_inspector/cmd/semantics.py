@@ -115,6 +115,31 @@ class CmdBuilder(WindowsBuilder):
                 rendered.append(char)
             i += 1
         text = "".join(rendered)
+        # Preserve symbolic pieces for unresolved expansions without assigning a
+        # fabricated runtime filename. Ambiguous delayed expansion stays opaque.
+        if '!' not in text or self.delayed is not None:
+            pattern = r'%%?([A-Za-z])(?![A-Za-z0-9_]*%)|%([^%]+)%'
+            if self.delayed:
+                pattern += r'|!([^!]+)!'
+            pieces, names, cursor = [], [], 0
+            for match in re.finditer(pattern, text):
+                pieces.append(Value(text[cursor:match.start()]))
+                if match[1]:
+                    name = match[1]
+                    binding = self.loop_variables.get(name)
+                elif match[2]:
+                    name = match[2].casefold()
+                    binding = self.percent_env.get(name)
+                else:
+                    name = match[3].casefold()
+                    binding = self.env.get(name)
+                pieces.append(abstract_value(binding))
+                names.append(name)
+                cursor = match.end()
+            pieces.append(Value(text[cursor:]))
+            if names and any(p.text is None for p in pieces) and all(p.text is None or not any(c in p.text for c in '%!') for p in pieces):
+                shaped = compose(pieces, limit=self.limit)
+                return replace(shaped, variables=tuple(names), reason=shaped.reason or 'missing_or_batch_variable')
         missing, variables, reasons = [], [], []
         replacement_bytes = 0
         def replacement(binding, name):
@@ -279,7 +304,7 @@ class CmdBuilder(WindowsBuilder):
             if routes[2] == "discard":
                 self.unresolved("CMD error reporting is suppressed", "errors-suppressed", guard)
             if routes[1] in {"discard", "file"}:
-                self.facts[start:] = [replace(f, flags=f.flags | {"output_consumed"}) if f.kind in {"read", "invoke"} else f for f in self.facts[start:]]
+                self.facts[start:] = [replace(f, flags=f.flags | {"output_consumed", "output_redirected"}) if f.kind in {"read", "invoke"} else f for f in self.facts[start:]]
             route_start = pipeline_start if piped else start
             if stdin_values is not None:
                 self.facts[start:] = attach_sql_input(self.facts[start:], values=stdin_values, override=True)
@@ -412,6 +437,9 @@ class CmdBuilder(WindowsBuilder):
         if any(v.text is None or any(char in v.text for char in "*?") for v in items):
             literal = False
         binding = join(items, self.limit, variable) if literal else Value(None, "loop_variable_unresolved", (variable,))
+        if any(w.text.casefold() == '/l' for w in words[1:]):
+            from ..shared.runtime_values import component
+            binding = component(variables=(variable,))
         if len(do_words) > 1:
             body = (replace(do_node, children=tuple(c for c in do_node.children if c is not do_words[0])),)
             next_index = end + 2
@@ -544,6 +572,11 @@ class CmdBuilder(WindowsBuilder):
             return
         if name == "set":
             raw_tail = " ".join(w.text for w in words[1:]).strip('"')
+            numeric = re.fullmatch(r'(?i)/a\s+"?([A-Za-z_]\w*)\s*=\s*(-?(?:0|[1-9]\d*))"?', raw_tail)
+            if numeric:
+                from ..shared.runtime_values import component
+                self.env[numeric[1].casefold()] = replace(component(variables=(numeric[1].casefold(),)), local_definition=not guard)
+                return
             if args and (args[0].text or "").casefold() in {"/a", "/p"}:
                 keys = re.findall(r"([A-Za-z_][A-Za-z0-9_]*)\s*(?:[+*/%&|^-]?=|\+\+|--)", raw_tail)
                 if not keys:
@@ -558,14 +591,18 @@ class CmdBuilder(WindowsBuilder):
                 if "=" in raw_tail:
                     key = raw_tail.split("=", 1)[0]
                     if key and not any(c in key for c in "%!"):
-                        self.env[key.casefold()] = Value(None, tail.reason or "unresolved_assignment", (key.casefold(),))
+                        if tail.fragments and isinstance(tail.fragments[0], str) and '=' in tail.fragments[0]:
+                            self.env[key.casefold()] = replace(tail, fragments=(tail.fragments[0].split('=', 1)[1], *tail.fragments[1:]), local_definition=not guard)
+                        else:
+                            self.env[key.casefold()] = Value(None, tail.reason or "unresolved_assignment", (key.casefold(),), local_definition=not guard)
                     else:
                         self.env = {k: Value(None, "unresolved_assignment", (k,)) for k in self.env}
-                self.unresolved("CMD assignment value is unresolved", "unresolved-value", guard, values=(tail,))
+                if not tail.component_safe:
+                    self.unresolved("CMD assignment value is unresolved", "unresolved-value", guard, values=(tail,))
                 return
             if "=" in tail.text:
                 key, binding = tail.text.split("=", 1)
-                self.env[key.casefold()] = binding
+                self.env[key.casefold()] = Value(binding, local_definition=not guard)
                 if key.casefold() == "path":
                     self.emit("environment", "environment-modified", targets=("PATH",), guard=guard)
             return
@@ -708,6 +745,12 @@ class CmdBuilder(WindowsBuilder):
                 self.halted = True
             return
         if name in {"echo", "ver", "cls", "title", "pause"}:
+            if name == 'echo':
+                references = self.references(' '.join(w.text for w in words[1:]))
+                exposed = {n.lstrip('!') for n in references if not n.startswith('%')
+                           and n.lstrip('!') in self.input_environment
+                           and not abstract_value((self.env if n.startswith('!') else self.percent_env).get(n.lstrip('!'))).local_definition}
+                self.emit('output', 'environment-value-output', values=args, targets=tuple(sorted(exposed)), guard=guard)
             return
         if name in {"copy", "move", "ren", "rename"}:
             operands, unknown = [], False

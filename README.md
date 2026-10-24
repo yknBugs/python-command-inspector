@@ -26,6 +26,7 @@ it. It is not a sandbox and not a vulnerability scanner for deployed code — se
 
 - [Why this exists](#why-this-exists)
 - [What it looks at](#what-it-looks-at)
+- [Runtime output, provenance and trusted scripts](#runtime-output-provenance-and-trusted-scripts)
 - [Install](#install)
 - [Quick start](#quick-start)
 - [Report format](#report-format)
@@ -87,6 +88,7 @@ deployed to a hostile environment.
 | Packages, services, disks, power | installs, `systemctl`, `crontab`, raw devices, shutdown/reboot |
 | SQL | DDL/DML severity without executing anything |
 | Content inspection | prompt-injection text read from files, obfuscated payloads |
+| Runtime output and provenance | timestamps, digests, counters; caller-supplied environment values; redirect destinations |
 
 Three things make the output useful rather than noisy:
 
@@ -99,6 +101,29 @@ Three things make the output useful rather than noisy:
 3. **Read-only local evidence.** When enabled, the analyzer stats targets, reads file headers,
    and expands bounded globs to distinguish "deletes `/etc`" from "deletes a missing file".
    Budgets cap every read and traversal, and the result is cached per call.
+
+## Runtime output, provenance and trusted scripts
+
+Runtime output is never executed or evaluated. The analyzer still recognizes a small set of
+output shapes that are provably bounded — a formatted timestamp (`date +…`, `Get-Date -Format …`),
+a hex digest (`sha256sum … | cut …`), a numeric loop counter or range — and keeps only the
+**containing directory** as the target. `… > "/work/doc_$STAMP.txt"` is therefore a write inside
+`/work`, not an invented filename; `$MISSING` stays `unresolved-value`, unsafe date formats stay
+unbounded, and device namespaces are never downgraded to ordinary files.
+
+Output provenance is tracked separately from the output destination. Printing a caller-supplied
+environment value that was not unconditionally replaced locally is `environment-value-output`
+(LOW). Credential-shaped content and credential-named variables are still `credentials-exposed`
+even when the output is redirected to a file or `/dev/null`/`$null`/`NUL`. The name-based quiet
+lists — `quiet_output_variables` (default `PIPESTATUS`) and `quiet_environment_variables`
+(default `PYTHONIOENCODING`, `PYTHONUTF8`) — suppress ordinary noise only; they never suppress
+credential-shaped content, and `PATH` is not exempt.
+
+`trusted_scripts` is an explicit list of **absolute** script paths. Invoking one is reported as
+`trusted-script-invoked` (LOW) without reading its source. Trust skips source inspection only:
+writes to the script are still inspected, trust is exact-path rather than basename matching, and
+the parent's variables and working directory become unresolved after the call instead of being
+assumed unchanged.
 
 ## Install
 
@@ -210,8 +235,8 @@ Every non-empty report conforms to the bundled `schemas/report.json` (JSON Schem
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.11.0",
-  "rule_catalog_version": "1.11.0",
+  "analyzer_version": "1.13.0",
+  "rule_catalog_version": "1.13.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -245,8 +270,9 @@ Every non-empty report conforms to the bundled `schemas/report.json` (JSON Schem
 
 ## Finding levels and rule families
 
-The catalog contains **76 rules across 9 types** (`content`, `coverage`, `environment`,
-`execution`, `filesystem`, `git`, `network`, `sql`, `system`).
+The catalog contains **78 rules across 9 types** (`content`, `coverage`, `environment`,
+`execution`, `filesystem`, `git`, `network`, `sql`, `system`). Version 1.13.0 adds
+`trusted-script-invoked` and `environment-value-output`, both `LOW`.
 
 | Level | Meaning |
 | --- | --- |
@@ -281,6 +307,9 @@ config = AnalyzerConfig(
     shell="bash",
     protected_directories=("/", "/etc", "/usr", "/srv/data"),
     allowed_write_paths=("/work/build",),
+    trusted_scripts=("/work/init.sh",),
+    quiet_output_variables=("PIPESTATUS",),
+    quiet_environment_variables=("PYTHONIOENCODING", "PYTHONUTF8"),
     disabled_rules=frozenset({"git-push"}),
     local_evidence=True,
     possible_values=16,
@@ -294,6 +323,9 @@ The same structure can be loaded from TOML:
 ```toml
 shell = "bash"
 local_evidence = true
+trusted_scripts = ["/work/init.sh"]
+quiet_output_variables = ["PIPESTATUS"]
+quiet_environment_variables = ["PYTHONIOENCODING", "PYTHONUTF8"]
 
 [workspace]
 additional_paths = ["/opt/tools"]
@@ -331,6 +363,12 @@ Notes:
 
 - Unknown top-level fields, unknown rule ids, and non-boolean `enabled` values are rejected with
   `ConfigurationError`.
+- `trusted_scripts` entries must be absolute paths; trust is matched against the normalized full
+  path, never against a basename. Supplying the list is the only way to opt in — there is no
+  project-file discovery.
+- `quiet_output_variables` and `quiet_environment_variables` accept shell variable names. They are
+  name-based noise suppression, not a way to hide credential-shaped values; the analyzer still
+  reports those by content.
 - Supplying `[tools.known]` **replaces** the built-in known-tool map; merge with
   `AnalyzerConfig().known_tools` yourself if you only want to add names.
 - `protected.directories` currently requires `match = "self"` (the default), i.e. the exact
@@ -426,6 +464,11 @@ limits are part of the contract and are exposed by `Analyzer.capabilities()["lim
   client-side includes are not inspected.
 - Wildcard matching is bounded and does not follow directory links; advanced provider patterns
   remain unresolved.
+- Runtime output is bounded only for the recognized timestamp, digest, counter and range shapes.
+  Everything else remains `unresolved-value`; a constrained scope is a containing directory, not a
+  concrete filename.
+- Configured trusted scripts skip source inspection by design. The analyzer does not claim to know
+  their effects or to preserve the caller's state across the call.
 - The Windows models are conservative and have not been validated against native Windows
   execution of every modelled command.
 
@@ -465,6 +508,7 @@ src/command_inspector/
 ├── reporting.py        # grouping, aggregation, redaction
 ├── paths.py            # POSIX/Windows lexical path semantics
 ├── models.py           # Fact, Finding, AnalysisReport, levels
+├── shared/runtime_values.py  # bounded runtime output, path scope, language hints
 ├── bash/  pwsh/  cmd/  python/  javascript/  sql/   # frontends + semantics
 ├── admin/  git/  misc/  shared/                     # domain models
 └── schemas/report.json # JSON Schema for reports

@@ -115,7 +115,7 @@ def test_repeated_readonly_declaration_rejects_assignment_but_continues():
     ("cat secrets 1>&2 | wc -c", True),
     ("cat secrets | wc -c", False),
     ("cat secrets 2>/dev/null | wc -c", False),
-    ("cat secrets 1>&2 > /dev/null", False),
+    ("cat secrets 1>&2 > /dev/null", True),
     ("cat secrets > /dev/null 1>&2", True),
 ])
 def test_descriptor_order_and_pipeline_routing(command, exposes):

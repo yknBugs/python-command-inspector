@@ -12,6 +12,7 @@ from ..sql.clients import attach_sql_input, sql_file_input
 from ..models import Fact, SyntaxNode, Value
 from ..wildcards import literal_pattern
 from ..shared.value_flow import DEFAULT_LIMIT, value as abstract_value, join, join_maps, choices, evaluate, mark, ValueLimits, compose, bounded_arguments
+from ..shared.runtime_values import runtime_output, component
 
 #: Node kinds that can appear as the operator inside a `file_redirect`.
 REDIRECT_OPERATORS = {">", ">>", "<", ">&", "<&", "&>", "&>>", ">|", "<>"}
@@ -48,11 +49,25 @@ def _resolve_word(node, env, quoted, limit):
         if not re.fullmatch(r"[A-Za-z_][A-Za-z0-9_]*", name):
             return Value(None, "unsupported_parameter_expansion", word_variables(node))
         value = env.get(name, Value(None, "missing_variable", (name,)))
+        if not quoted and value.component_safe and 'IFS' in env and (
+                env['IFS'].text is None or any(not c.isspace() for c in env['IFS'].text)):
+            value = replace(value, component_safe=False, reason='unquoted_split_or_glob')
         if not quoted and value.text and any(c.isspace() for c in value.text):
             return Value(None, "unquoted_split_or_glob", (name,))
         pattern = not quoted and value.text is not None and any(c in value.text for c in "*?[")
-        return Value(value.text, value.reason, (name,), pattern, value.text if pattern else None)
+        return replace(value, variables=tuple(sorted(set(value.variables) | {name})), pattern=pattern, pattern_text=value.text if pattern else None)
     if kind in {"command_substitution", "arithmetic_expansion", "process_substitution", "ansi_c_string"}:
+        if kind == 'arithmetic_expansion':
+            shaped = component(variables=word_variables(node))
+            if not quoted and 'IFS' in env and (env['IFS'].text is None or any(not c.isspace() for c in env['IFS'].text)):
+                return replace(shaped, component_safe=False, reason='unquoted_split_or_glob')
+            return shaped
+        if kind == 'command_substitution':
+            shaped = runtime_output(text[2:-1] if text.startswith('$(') else text[1:-1], 'bash')
+            if shaped is not None:
+                if not quoted and 'IFS' in env and (env['IFS'].text is None or any(not c.isspace() for c in env['IFS'].text)):
+                    return replace(shaped, component_safe=False, reason='unquoted_split_or_glob')
+                return shaped
         return Value(None, "runtime_or_unsupported_expansion", word_variables(node))
     if kind in {"string", "concatenation", "command_name"}:
         parts = []
@@ -75,7 +90,8 @@ def _resolve_word(node, env, quoted, limit):
         composed = compose(parts, limit=limit)
         return Value(composed.text, composed.reason, variables, pattern if composed.text is not None else False,
                      "".join(p.pattern_text or (p.text if p.pattern else literal_pattern(p.text))
-                             for p in parts) if composed.text is not None and pattern else None)
+                             for p in parts) if composed.text is not None and pattern else None,
+                     fragments=composed.fragments, component_safe=composed.component_safe)
     if kind in {"word", "string_content", "number", "variable_name"}:
         # Bash only treats backslash specially before selected characters inside quotes.
         if kind == "string_content":
@@ -110,14 +126,15 @@ class SemanticBuilder:
         self.source = source
         self.context = context
         self.stdout_destination = "caller_stdout"
+        self.input_environment = set(env)
 
     def emit(self, fact: Fact, guard=""):
         if fact.kind in {"read", "invoke"}:
             route = self.stdout_destination
             flag = "output_consumed" if route in {"file", "discard"} else "output_to_pipe" if route == "pipe" else "output_to_caller"
-            fact = replace(fact, flags=fact.flags | {flag})
+            fact = replace(fact, flags=fact.flags | {flag} | ({"output_redirected"} if route in {"file", "discard"} else set()))
         self.facts.append(replace(fact, source=self.source, context=self.context, guard=guard or fact.guard, cwd=self.state.cwd,
-                                  bindings=tuple((k, v.text if v.text is not None else v) for k, v in self.state.env.items() if v.text is not None or v.alternatives)))
+                                  bindings=tuple((k, v.text if v.text is not None else v) for k, v in self.state.env.items() if v.text is not None or v.alternatives or v.fragments)))
 
     def build(self, root: SyntaxNode) -> tuple[Fact, ...]:
         self.walk(root)
@@ -578,6 +595,13 @@ class SemanticBuilder:
                 if node.kind == "c_style_for_statement":
                     variables.update(self.arithmetic_writes(child))
         self.invalidate_loop_variables(variables, guard)
+        counters = set()
+        if node.kind == 'c_style_for_statement':
+            match = re.match(r'for\s*\(\(\s*([A-Za-z_]\w*)\s*=\s*-?\d+\s*;', node.text)
+            if (match and match[1] not in self.state.readonly | self.state.possibly_readonly
+                    and re.search(r';\s*' + re.escape(match[1]) + r'\s*(?:\+\+|--|[+-]=\s*\d+)\s*\)\)', node.text)):
+                counters.add(match[1])
+                self.state.env[match[1]] = component(variables=(match[1],))
         if variable and node.kind == "for_statement" and any(c.kind == "in" for c in node.children):
             items = [resolve_word(c, before.env, limit=self.limit) for c in node.children
                      if c.kind in {"word", "string", "raw_string", "simple_expansion", "expansion", "concatenation"}]
@@ -592,6 +616,8 @@ class SemanticBuilder:
             seed = self.state.copy()
             iteration_binding = self.state.env.get(variable)
             def pass_body():
+                for counter in counters:
+                    self.state.env[counter] = component(variables=(counter,))
                 if variable and iteration_binding is not None and node.kind == "for_statement":
                     self.state.env[variable] = iteration_binding
                 self.walk(body, (guard + "; " if guard else "") + "if the loop body runs")
@@ -735,7 +761,7 @@ class SemanticBuilder:
         if readonly:
             self.state.readonly.add(name)
             self.state.possibly_readonly.discard(name)
-        self.state.env[name] = value
+        self.state.env[name] = replace(value, local_definition=not guard)
         if exported or name in self.state.exported:
             # Assigning to an already-exported name keeps it exported.
             self.state.exported.add(name)
@@ -855,9 +881,13 @@ class SemanticBuilder:
             # Changing to the current directory leaves cwd unchanged on either
             # success or failure; other standalone changes remain uncertain.
             self.state.cwd = target if cd_success or target == self.state.cwd else None
-        if name not in {"rm"}:
+        if name in {'echo', 'printf'}:
+            exposed = {n for n in set().union(*(set(v.variables) for v in args)) & self.input_environment
+                       if not self.state.env.get(n, Value(None)).local_definition}
+            self.emit(Fact('output', 'environment-value-output', targets=tuple(sorted(exposed)), values=args), guard)
+        if name not in {"rm", "echo", "printf", "test", "["}:
             for value in args:
-                if value.text is None:
+                if value.text is None and not value.component_safe:
                     self.emit(Fact("unresolved", "unresolved-value", values=(value,), payload=value.reason or "Runtime-dependent argument"), guard)
 
     def stdin_passthrough(self, body) -> bool:

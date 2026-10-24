@@ -179,7 +179,7 @@ def test_dialect_and_public_contract():
     assert Analyzer().capabilities()["parser_versions"]["sqlglot"] == "30.21.0"
     assert "sql" in Analyzer().capabilities()["source_languages"]
     rules = Analyzer.rule_catalog()
-    assert rules["version"] == "1.11.0"
+    assert rules["version"] == "1.13.0"
     assert all(r["introduced_in"] == "1.3.0" for r in rules["rules"] if r["rule"].startswith("sql-"))
 
 

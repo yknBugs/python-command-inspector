@@ -35,7 +35,16 @@ def compose(parts, separator="", suffix="", limit=DEFAULT_LIMIT):
     parts = tuple(parts)
     variables = tuple(sorted({name for part in parts for name in part.variables}))
     if any(part.text is None for part in parts):
-        return Value(None, next((part.reason for part in parts if part.reason), "unresolved_composition"), variables)
+        fragments = []
+        for index, part in enumerate(parts):
+            if index:
+                fragments.append(separator)
+            fragments.extend((part.text,) if part.text is not None else part.fragments or (None,))
+        fragments.append(suffix)
+        if len(fragments) > limits(limit).bytes or sum(len((s or '').encode('utf-8', errors='surrogatepass')) for s in fragments) > limits(limit).bytes:
+            return Value(None, 'value_bytes_limit', variables)
+        return Value(None, next((part.reason for part in parts if part.reason), "unresolved_composition"), variables,
+                     fragments=tuple(fragments), component_safe=all(p.text is not None or p.component_safe for p in parts))
     budget = limits(limit).bytes
     size = len(suffix.encode("utf-8", errors="surrogatepass")) + max(0, len(parts) - 1) * len(separator.encode("utf-8", errors="surrogatepass"))
     for part in parts:
@@ -78,6 +87,9 @@ def join(bindings, limit=DEFAULT_LIMIT, name=""):
             return Value(None, "value_bytes_limit", items[0].variables)
         return items[0]
     variables = tuple(sorted({n for item in items for n in item.variables} | ({name} if name else set())))
+    local = bool(items) and all(item.local_definition for item in items)
+    if items and all(item.component_safe and item.fragments == items[0].fragments for item in items):
+        return replace(items[0], variables=variables, local_definition=local)
     unique = {}
     for item in items:
         for candidate in candidates(item):
@@ -91,8 +103,8 @@ def join(bindings, limit=DEFAULT_LIMIT, name=""):
     if not unique:
         return Value(None, "missing_variable", variables)
     if len(unique) == 1:
-        return replace(next(iter(unique.values())), variables=variables)
-    return Value(None, variables=variables, alternatives=tuple(unique.values()))
+        return replace(next(iter(unique.values())), variables=variables, local_definition=local)
+    return Value(None, variables=variables, alternatives=tuple(unique.values()), local_definition=local)
 
 
 def join_maps(maps, limit=DEFAULT_LIMIT, *, strings=False):

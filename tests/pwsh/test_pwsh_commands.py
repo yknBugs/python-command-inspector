@@ -59,7 +59,7 @@ def check(command, shell, rules, level, *, env=None, files=None, cwd=CWD):
     ('Get-Content C:\\other\\a', ['read-outside-workspace', 'ingestion-inspection-incomplete'], 'LOW'),
     ('Get-ChildItem a', [], 'NONE'),
     ('Get-Content a | Measure-Object', [], 'NONE'),
-    ('Get-Content a > $null', [], 'NONE'),
+    ('Get-Content a > $null', ['ingestion-inspection-incomplete'], 'LOW'),
     ('Get-Content a 2>$null', ['ingestion-inspection-incomplete', 'errors-suppressed'], 'LOW'),
     ('Get-Content a -ErrorAction SilentlyContinue', ['ingestion-inspection-incomplete', 'errors-suppressed'], 'LOW'),
     ("$ErrorActionPreference='SilentlyContinue'", ['errors-suppressed'], 'LOW'),

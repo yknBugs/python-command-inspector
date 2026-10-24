@@ -33,15 +33,26 @@ class AnalyzerConfig:
     possible_values: int = 16
     control_flow_steps: int = 256
     value_bytes: int = 524288
+    trusted_scripts: tuple[str, ...] = ()
+    quiet_output_variables: tuple[str, ...] = ('PIPESTATUS',)
+    quiet_environment_variables: tuple[str, ...] = ('PYTHONIOENCODING', 'PYTHONUTF8')
 
     def __post_init__(self):
         if self.shell is not None and not isinstance(self.shell, str):
             raise ConfigurationError("shell must be a string or None")
-        for name in ("additional_paths", "protected_directories", "allowed_write_paths"):
+        for name in ("additional_paths", "protected_directories", "allowed_write_paths", "trusted_scripts"):
             paths = getattr(self, name)
             if not isinstance(paths, (list, tuple)) or any(not isinstance(p, str) or "\x00" in p or not (PathStyle(False).absolute(p) or PathStyle(True).absolute(p)) for p in paths):
                 raise ConfigurationError(f"{name} must contain absolute paths")
             object.__setattr__(self, name, tuple(paths))
+        if not isinstance(self.quiet_output_variables, (list, tuple)) or any(
+                not isinstance(n, str) or not n or not n.replace('_', '').isalnum() for n in self.quiet_output_variables):
+            raise ConfigurationError('quiet_output_variables must contain variable names')
+        object.__setattr__(self, 'quiet_output_variables', tuple(self.quiet_output_variables))
+        if not isinstance(self.quiet_environment_variables, (list, tuple)) or any(
+                not isinstance(n, str) or not n or not n.replace('_', '').isalnum() for n in self.quiet_environment_variables):
+            raise ConfigurationError('quiet_environment_variables must contain variable names')
+        object.__setattr__(self, 'quiet_environment_variables', tuple(self.quiet_environment_variables))
         if not isinstance(self.local_evidence, bool):
             raise ConfigurationError("local_evidence must be boolean")
         if not isinstance(self.known_tools, Mapping) or any(
@@ -65,7 +76,7 @@ class AnalyzerConfig:
         if not isinstance(mapping, Mapping):
             raise ConfigurationError("config must be a mapping")
         try:
-            if set(mapping) - {"shell", "workspace", "protected", "rules", "limits", "local_evidence", "tools"}:
+            if set(mapping) - {"shell", "workspace", "protected", "rules", "limits", "local_evidence", "tools", "trusted_scripts", "quiet_output_variables", "quiet_environment_variables"}:
                 raise ConfigurationError("unknown config field")
             workspace = mapping.get("workspace", {})
             protected = mapping.get("protected", {})
@@ -87,6 +98,9 @@ class AnalyzerConfig:
             if set(rules) - RULES.keys():
                 raise ConfigurationError("unknown rule configuration")
             return cls(shell=mapping.get("shell", defaults.shell),
+                       trusted_scripts=mapping.get('trusted_scripts', ()),
+                       quiet_output_variables=mapping.get('quiet_output_variables', defaults.quiet_output_variables),
+                       quiet_environment_variables=mapping.get('quiet_environment_variables', defaults.quiet_environment_variables),
                        additional_paths=tuple(workspace.get("additional_paths", ())),
                        allowed_write_paths=workspace.get("allowed_write_paths", ()),
                        protected_directories=tuple(d["path"] for d in directories) if "directories" in protected else defaults.protected_directories,

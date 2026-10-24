@@ -34,7 +34,6 @@ def entries(report, rule):
     'echo text > /dev/./null', 'echo text > /dev//null',
     'DEST=/dev/null; echo text > "$DEST"', 'echo text | tee /dev/null',
     'cat /dev/null',
-    'printf password=abcdefghijk > /dev/null', 'cat secret > /dev/./null',
 ])
 def test_posix_null_device_is_quiet_without_evidence(command):
     report, provider = analyze(command, files={"/work/secret": "password=abcdefghijk"})

@@ -13,7 +13,7 @@ def analyze(command, shell="bash", env=None):
 
 
 @pytest.mark.parametrize("shell,command,rule,names", [
-    ("bash", 'echo "$MISSING"', "unresolved-value", ["MISSING"]),
+    ("bash", 'custom-tool "$MISSING"', "unresolved-value", ["MISSING"]),
     ("bash", 'cat "$MISSING"', "unresolved-value", ["MISSING"]),
     ("bash", 'echo x > "$MISSING"', "write-variable-unresolved", ["MISSING"]),
     ("bash", 'rm "$MISSING"', "delete-variable-unresolved", ["MISSING"]),
@@ -37,7 +37,7 @@ def test_unresolved_values_export_names_without_shell_syntax(shell, command, rul
 
 
 @pytest.mark.parametrize("shell,command,names", [
-    ("bash", 'echo "$Z/$A/$Z"', ["A", "Z"]),
+    ("bash", 'custom-tool "$Z/$A/$Z"', ["A", "Z"]),
     ("powershell", 'Get-Content "$Z/$A/$Z"', ["a", "z"]),
     ("cmd", 'type %Z%-%A%-%Z%', ["a", "z"]),
     ("cmd", 'type !Z!-!A!-!Z!', ["a", "z"]),
@@ -48,7 +48,7 @@ def test_composite_values_keep_all_names_sorted_and_unique(shell, command, names
 
 
 def test_different_variable_dependencies_survive_deduplication():
-    findings = [f for f in analyze('echo "$FIRST" "$SECOND" "$FIRST"').findings if f.rule == "unresolved-value"]
+    findings = [f for f in analyze('custom-tool "$FIRST" "$SECOND" "$FIRST"').findings if f.rule == "unresolved-value"]
     assert sorted(f.data["variables"] for f in findings) == [["FIRST"], ["SECOND"]]
 
 
@@ -59,8 +59,8 @@ def test_merged_interpreter_notices_union_variable_names():
 
 @pytest.mark.parametrize("command,names", [
     ('for item in a b; do cat "$item"; done', ["item"]),
-    ('echo "${ROOT%/*}"', ["ROOT"]),
-    ('echo "$(echo $INNER)"', ["INNER"]),
+    ('custom-tool "${ROOT%/*}"', ["ROOT"]),
+    ('custom-tool "$(echo $INNER)"', ["INNER"]),
     ('bash <<EOF\necho $INPUT\nEOF', ["INPUT"]),
 ])
 def test_loop_and_unsupported_expansion_metadata(command, names):
@@ -76,8 +76,8 @@ def test_loop_and_unsupported_expansion_metadata(command, names):
 
 @pytest.mark.parametrize("command,rule,names", [
     ('[IO.Directory]::Delete("C:\\work\\folder", $Recursive)', "delete-recursion-unresolved", ["recursive"]),
-    ('[IO.File]::WriteAllText("file.txt", $Content)', "unresolved-value", ["content"]),
-    ('Set-Content file.txt -Value $Content', "unresolved-value", ["content"]),
+    ('[IO.File]::WriteAllText("file.ps1", $Content)', "unresolved-value", ["content"]),
+    ('Set-Content file.ps1 -Value $Content', "unresolved-value", ["content"]),
     ('$Object.Mystery($Argument)', "unresolved-value", ["argument", "object"]),
     ('Move-Item $Source $Destination', "unresolved-value", ["destination", "source"]),
     ('Invoke-WebRequest -Uri $Address', "unresolved-value", ["address"]),
@@ -91,7 +91,7 @@ def test_powershell_nonpath_arguments_preserve_metadata(command, rule, names):
 
 
 def test_no_identifiable_variable_is_an_empty_list():
-    finding, = [f for f in analyze('echo "$(pwd)"').findings if f.rule == "unresolved-value"]
+    finding, = [f for f in analyze('custom-tool "$(pwd)"').findings if f.rule == "unresolved-value"]
     assert finding.data["variables"] == []
 
 
@@ -103,6 +103,6 @@ def test_literal_text_does_not_invent_variables(shell, command):
 
 def test_variable_values_are_not_exported():
     report = analyze('echo $SECRET', env={"SECRET": "private value with spaces"})
-    finding, = [f for f in report.findings if f.rule == "unresolved-value"]
+    finding, = [f for f in report.findings if f.rule == "credentials-exposed"]
     assert finding.data["variables"] == ["SECRET"]
     assert "private value" not in json.dumps(report.to_dict())

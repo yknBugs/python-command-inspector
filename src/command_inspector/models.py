@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
-ANALYZER_VERSION = "1.11.0"
+ANALYZER_VERSION = "1.13.0"
 SCHEMA_VERSION = "1.0.0"
-CATALOG_VERSION = "1.11.0"
+CATALOG_VERSION = "1.13.0"
 
 
 class InputError(ValueError):
@@ -57,6 +57,9 @@ class Value:
     pattern: bool = False
     pattern_text: str | None = field(default=None, repr=False)
     alternatives: tuple["Value", ...] = field(default=(), repr=False)
+    fragments: tuple[str | None, ...] = field(default=(), repr=False)
+    component_safe: bool = False
+    local_definition: bool = False
 
 
 @dataclass(frozen=True, slots=True)

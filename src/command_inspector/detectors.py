@@ -21,6 +21,7 @@ from .wildcards import selection_for
 from .shared.null_devices import is_null_device
 from .effort import EvidenceEffort, evidence_effort
 from .shared.command_names import suspicious_command_name
+from .shared.runtime_values import path_scope, language_hint
 
 
 def raw_device(path: str) -> bool:
@@ -391,6 +392,19 @@ class DetectorContext:
                 self.emit("hardcoded-secret", "Source contains a hard-coded credential", fact,
                           {"language": fact.shell, "variables": list(fact.targets),
                            "line": int(next(flag[5:] for flag in fact.flags if flag.startswith("line:")))})
+            elif fact.kind == 'output':
+                secret_names = [n for n in fact.targets if re.search(r'(?i)(password|passwd|secret|private.?key|access.?key|api.?key|token|credential)', n)]
+                secret_values = [v for v in fact.values if v.text and contains_secret(v.text)]
+                if secret_names or secret_values:
+                    self.secret_literals.update(v.text for v in fact.values if v.text and (secret_values or set(v.variables) & set(secret_names)))
+                    self.emit('credentials-exposed', 'Outputs credential-bearing content', fact,
+                              {'variables': sorted(secret_names or fact.targets)})
+                else:
+                    normalize = str.casefold if fact.shell in {'cmd', 'powershell'} else str
+                    quiet = {normalize(n) for n in self.config.quiet_output_variables}
+                    names = [n for n in fact.targets if normalize(n.removeprefix('env:')) not in quiet]
+                    if names:
+                        self.emit('environment-value-output', 'Outputs a caller-supplied environment value', fact, {'variables': names})
             elif fact.kind == "unresolved":
                 if (fact.operation == "unknown-command" and not fact.command_path
                         and self.suspicious_command(fact, fact.command_name)):
@@ -454,7 +468,7 @@ class DetectorContext:
                     targets = tuple(p for v in child.values if (p := self.resolve_path(v, nested_cwd)) is not None) if child.kind in {"read", "write", "delete"} else child.targets
                     nested.append(replace(child, targets=targets, source=fact.source, context=fact.context,
                                           cwd=nested_cwd, shell=fact.shell, bindings=tuple(child_bindings.items()),
-                                          guard=child.guard or fact.guard, flags=child.flags | (fact.flags & {"output_consumed", "selection_uncertain"}) |
+                                          guard=child.guard or fact.guard, flags=child.flags | (fact.flags & {"output_consumed", "output_redirected", "selection_uncertain"}) |
                                           (fact.flags & {"stdin_source", "pipeline_stdin", "stdin_redirected"} if child.kind in {"execute", "invoke", "credential_input"} else set()),
                                           stdin_payload=(None if "consumes_stdin" in fact.flags else fact.stdin_payload)
                                           if "stdin_source" in fact.flags and child.kind in {"execute", "invoke", "credential_input"} else child.stdin_payload,
@@ -500,6 +514,10 @@ class DetectorContext:
                           "Assignment may be rejected by a read-only binding" if "possible" in fact.flags else "Assignment to a read-only binding was rejected; the previous value remains",
                           fact, {"variables": list(fact.targets)})
             elif fact.kind == "environment":
+                normalize = str.casefold if fact.shell in {'cmd', 'powershell'} else str
+                quiet = {normalize(n) for n in self.config.quiet_environment_variables}
+                if fact.targets and all(normalize(n.removeprefix('env:')) in quiet for n in fact.targets):
+                    continue
                 self.emit("environment-modified", "Changes the shell environment: " + ", ".join(fact.targets), fact,
                           {"variables": list(fact.targets)})
             elif fact.kind == "network":
@@ -585,13 +603,31 @@ class DetectorContext:
                 self.emit("permissions-too-broad", "Grants read, write, and execute access to everyone", fact, {"targets": list(fact.targets), "mode": "777"})
 
     def location(self, fact):
+        bounded_patterns = set()
+        for value in fact.values:
+            if fact.kind == 'read' and value.pattern:
+                selection = selection_for(value, fact.cwd, fact.shell, self.paths)
+                if selection is not None:
+                    bounded_patterns.add(value)
+                    if not self.in_workspace(selection.base):
+                        self.emit('read-outside-workspace', 'Reads a selection outside the workspace', fact,
+                                  {'scope_root': selection.base, 'pattern': value.text, 'target_resolved': False})
+            scope = path_scope(value, self.paths, fact.cwd)
+            if scope is not None:
+                if not self.in_workspace(scope):
+                    self.emit('read-outside-workspace' if fact.kind == 'read' else 'write-outside-workspace',
+                              'Runtime target is within ' + scope + ' outside the workspace', fact,
+                              {'scope_root': scope, 'target_resolved': False, 'path_basis': 'constrained_runtime'})
+                if fact.kind == 'read' and fact.operation == 'ingest':
+                    self.emit('ingestion-inspection-incomplete', 'Runtime filename is unknown; content cannot be inspected', fact,
+                              {'scope_root': scope, 'target_resolved': False})
         for path in fact.targets:
             allowed_write = fact.kind == "write" and self.paths.key(path) in {self.paths.key(p) for p in self.config.allowed_write_paths}
             if not self.in_workspace(path) and not allowed_write:
                 self.emit("read-outside-workspace" if fact.kind == "read" else "write-outside-workspace",
                           ("Reads " if fact.kind == "read" else "Writes ") + path + " outside the workspace", fact,
                           {"target": path, "path_basis": "lexical"})
-        if any(self.resolve_path(v, fact.cwd) is None for v in fact.values) or not fact.targets and fact.values:
+        if any(v not in bounded_patterns and self.resolve_path(v, fact.cwd) is None and path_scope(v, self.paths, fact.cwd) is None for v in fact.values):
             self.emit("unresolved-value", "File target cannot be resolved from the supplied values", fact)
 
     def match(self, fact, value):
@@ -740,7 +776,15 @@ class DetectorContext:
             if selection is not None and not complete:
                 changed.add(selection.base)
         remaining = tuple(v for v in fact.values if v not in patterns)
-        unresolved = tuple(v for v in remaining if self.resolve_path(v, fact.cwd) is None)
+        scoped = [(v, path_scope(v, self.paths, fact.cwd)) for v in remaining]
+        for value, scope in scoped:
+            if scope is not None:
+                self.emit('delete-inside-workspace' if self.in_workspace(scope) else 'delete-outside-workspace',
+                          'Deletes a runtime-named target within ' + scope, fact,
+                          {'scope_root': scope, 'target_resolved': False, 'recursive': recursive, 'force': force,
+                           'path_basis': 'constrained_runtime'})
+                changed.add(scope)
+        unresolved = tuple(v for v, scope in scoped if scope is None and self.resolve_path(v, fact.cwd) is None)
         if unresolved:
             patterns = sorted(v.text or "" for v in unresolved if v.pattern)
             title = ("Deletion target is a pattern whose matches are not enumerated" if patterns
@@ -774,9 +818,9 @@ class DetectorContext:
             return
         fact = self.expand_file_patterns(fact)
         self.location(fact)
-        if fact.operation != "ingest" or "output_consumed" in fact.flags:
-            # Metadata-only consumers (list/cd/pagers/discarded output) never
-            # need source bytes, even when the call permits Full evidence.
+        if fact.operation != "ingest" or "output_consumed" in fact.flags and "output_redirected" not in fact.flags:
+            # Metadata/count consumers do not expose source bytes. Explicit
+            # file/discard redirection still checks the producer's credentials.
             for path in fact.targets:
                 if 'probe_device_contents' in fact.flags and raw_device(path):
                     self.emit('raw-device-read', 'Inspects content on raw disk ' + path, fact, {'target': path})
@@ -822,7 +866,7 @@ class DetectorContext:
                 if contains_secret(text):
                     selection = "conservative" if qualifier == "may expose" else "fixed_filter" if "fixed_filter" in fact.flags else "character_window" if any(f.startswith('head_chars:') for f in fact.flags) else "line_window" if any(f.startswith(('head_lines:', 'tail_lines:')) for f in fact.flags) else "whole_file"
                     self.emit("credentials-read", f"Read content {qualifier} credentials", fact, {"target": path, "selection": selection})
-                if INJECTION.search(text):
+                if 'output_consumed' not in fact.flags and INJECTION.search(text):
                     self.emit("prompt-injection-read", "Read content contains suspected model-directed instructions", fact, {"target": path})
             if text is None or not answer.complete:
                 self.emit("ingestion-inspection-incomplete", "Read content could not be fully inspected", fact, {"target": path, "reason": answer.reason or answer.status.value})
@@ -830,6 +874,9 @@ class DetectorContext:
     def transfer(self, fact, cwd, depth):
         """Bound copy/move destinations without simulating successful writes."""
         source_values = fact.transfer_sources
+        if any(v.pattern and self.resolve_path(v, cwd) is None for v in source_values):
+            self.emit('unresolved-value', 'File transfer source selection cannot be determined', fact,
+                      {'reason': 'transfer_selection_unavailable'})
         sources = tuple(p for v in source_values if (p := self.resolve_path(v, cwd)) is not None)
         destination = self.resolve_path(fact.values[0], cwd) if fact.values else None
         invoked = self.invoked_effect(fact)
@@ -880,7 +927,9 @@ class DetectorContext:
             return
         fact = self.expand_file_patterns(fact)
         self.location(fact)
-        unresolved = [v for v in fact.values if v.variables and self.resolve_path(v, fact.cwd) is None]
+        scoped = {path_scope(v, self.paths, fact.cwd) for v in fact.values} - {None}
+        unresolved = [v for v in fact.values if v.variables and self.resolve_path(v, fact.cwd) is None
+                      and path_scope(v, self.paths, fact.cwd) is None]
         if unresolved:
             self.emit("write-variable-unresolved", "Variable-dependent write target cannot be bounded", fact,
                       {"variables": sorted({n for v in unresolved for n in v.variables}),
@@ -888,6 +937,7 @@ class DetectorContext:
             if self.invoked_effect(fact):
                 self.unknown_changes = True
         if self.invoked_effect(fact):
+            self.changed.update(self.paths.key(p) for p in scoped)
             for value in fact.values:
                 if value.pattern:
                     selection = selection_for(value, fact.cwd, fact.shell, self.paths)
@@ -899,8 +949,28 @@ class DetectorContext:
         # variable provenance or the finding's classification. Patterns with a
         # known base are bounded by the invalidation above.
         if self.invoked_effect(fact):
-            if (not fact.values and not fact.targets) or any(not v.pattern and self.resolve_path(v, fact.cwd) is None for v in fact.values):
+            if (not fact.values and not fact.targets) or any(not v.pattern and self.resolve_path(v, fact.cwd) is None
+                    and path_scope(v, self.paths, fact.cwd) is None for v in fact.values):
                 self.unknown_changes = True
+        unknown_targets = [v for v in fact.values if self.resolve_path(v, fact.cwd) is None]
+        if fact.payload is not None and (unknown_targets or not fact.targets):
+            if contains_secret(fact.payload):
+                self.emit('credentials-written', 'Write payload contains credentials', fact, {'target_resolved': False})
+            languages = {self.language(hint) for v in unknown_targets if (hint := language_hint(v))} - {None}
+            if not languages and fact.payload.startswith('#!'):
+                first_line = fact.payload.splitlines()[0]
+                for token, language in [('python', 'python'), ('node', 'javascript'), ('pwsh', 'powershell'), ('bash', 'shell'), ('sh', 'shell')]:
+                    if re.search(r'(?:/|\s)' + token + r'(?:\d+(?:\.\d+)*)?(?:\s|$)', first_line):
+                        languages.add(language)
+                        break
+            if fact.operation == 'append':
+                if languages:
+                    self.emit('unresolved-value', 'Final appended script content cannot be determined', fact,
+                              {'reason': 'unresolved_append_target'})
+            else:
+                for language in sorted(languages):
+                    self.inspect(fact.payload, language, fact.source + ':write-payload', 'written_content', cwd,
+                                 depth + 1, dict(fact.bindings))
         for path in fact.targets:
             if "create_if_missing" in fact.flags and not self.may_have_changed(path):
                 current = self.answer(StatTarget(path))
@@ -939,7 +1009,7 @@ class DetectorContext:
                         self.inspect_append(fact, path, language, cwd, depth, prefix_answer)
                     else:
                         self.inspect(fact.payload, language, path, "written_content", cwd, depth + 1, dict(fact.bindings))
-            elif fact.operation in {"overwrite", "append"} and "runtime_output" not in fact.flags:
+            elif fact.operation in {"overwrite", "append"} and (language or 'runtime_output' not in fact.flags and path.casefold().endswith(('.exe', '.com', '.dll', '.so', '.dylib', '.jar', '.wasm'))):
                 self.emit("unresolved-value", "Written content is not statically available", fact, {"target": path})
 
     def inspect_append(self, fact, path, language, cwd, depth, answer):
@@ -965,7 +1035,7 @@ class DetectorContext:
         return replace(fact, targets=targets, values=values)
 
     def expand_file_patterns(self, fact):
-        if fact.kind == "read" and (fact.operation != "ingest" or "output_consumed" in fact.flags):
+        if fact.kind == "read" and (fact.operation != "ingest" or "output_consumed" in fact.flags and "output_redirected" not in fact.flags):
             return fact
         targets, remaining = list(fact.targets), []
         for value in fact.values:
@@ -982,7 +1052,7 @@ class DetectorContext:
             targets.extend(paths)
             if not answer.complete or answer.status not in {EvidenceStatus.AVAILABLE, EvidenceStatus.MISSING}:
                 remaining.append(value)
-                if fact.kind == "read" and fact.operation == "ingest" and "output_consumed" not in fact.flags:
+                if fact.kind == "read" and fact.operation == "ingest":
                     self.emit("ingestion-inspection-incomplete", "Read pattern selection is incomplete", fact,
                               {"pattern": value.text, "matched_targets": paths, "reason": answer.reason or answer.status.value},
                               [{"source": value.text or "", "status": answer.status.value, "complete": False}])
@@ -1109,6 +1179,12 @@ class DetectorContext:
         if path is None or self.may_have_changed(path):
             self.emit("execution-content-unavailable", "Cannot determine the contents of the code being invoked", fact,
                       {"target": path, "reason": "changed_earlier" if path is not None else "unresolved_path"})
+            return
+        if self.paths.key(path) in {self.paths.key(p) for p in self.config.trusted_scripts}:
+            self.emit('trusted-script-invoked', 'Invokes trusted script; content inspection skipped', fact,
+                      {'target': path, 'effects': 'not_inspected'})
+            if self.invoked_effect(fact):
+                self.unknown_changes = True
             return
         # Cache evidence bytes, not invocation effects: the same source must
         # replay its mutations in every branch and at every call site.
@@ -1240,7 +1316,7 @@ class DetectorContext:
             if parsed.diagnostics:
                 self.emit("unsupported-syntax", "Windows shell source could not be parsed completely", placeholder)
             builder = PowerShellBuilder if language == "powershell" else CmdBuilder
-            facts = builder(cwd, env if env is not None else self.env, source=source, context=context, possible_values=self.config.possible_values, control_flow_steps=self.config.control_flow_steps, value_bytes=self.config.value_bytes).build(parsed.root)
+            facts = builder(cwd, env if env is not None else self.env, source=source, context=context, possible_values=self.config.possible_values, control_flow_steps=self.config.control_flow_steps, value_bytes=self.config.value_bytes, trusted_scripts=self.config.trusted_scripts).build(parsed.root)
             self.run(facts, cwd, depth=depth, effort=effort, context=context)
         elif language == "shell":
             if self.frontend is None:

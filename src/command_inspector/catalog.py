@@ -31,14 +31,14 @@ RULES = {
     "network-request": ("network", ("LOW",), "Makes an ordinary network request."),
     "download-content": ("network", ("MEDIUM",), "Downloads content to a destination or interpreter."),
     "publish-risk": ("network", ("MEDIUM",), "May publish local files or artifacts to a remote destination, including unresolved sources."),
-    "credentials-exposed": ("content", ("HIGH",), "Visible command input supplies a password to an authentication consumer."),
+    "credentials-exposed": ("content", ("HIGH",), "Visible command input supplies authentication credentials or contains visibly credential-bearing output, independently of its destination."),
     "credentials-sent": ("network", ("HIGH",), "Sends visibly credential-bearing data to a network endpoint."),
     "credentials-read": ("content", ("MEDIUM",), "Reads credential-shaped data into command output."),
     "credentials-written": ("content", ("MEDIUM",), "Authored write payload contains credential-shaped data."),
     "hardcoded-secret": ("content", ("MEDIUM",), "Python or JavaScript source contains a credential-shaped literal or a literal assigned to a credential field."),
     "prompt-injection-read": ("content", ("MEDIUM",), "Read content contains suspected model-directed instructions."),
     "ingestion-inspection-incomplete": ("content", ("LOW",), "Selected read content could not be fully inspected."),
-    "environment-modified": ("environment", ("MEDIUM",), "Changes PATH or the exported shell environment."),
+    "environment-modified": ("environment", ("MEDIUM",), "Changes PATH or another non-allowlisted process environment variable inherited by child processes."),
     "readonly-assignment-failed": ("environment", ("MEDIUM",), "An assignment to a read-only binding was rejected and the previous value stands."),
     "errors-suppressed": ("execution", ("LOW",), "Suppresses standard error output."),
     "package-install": ("system", ("MEDIUM",), "Installs software packages."),
@@ -77,6 +77,8 @@ RULES = {
 
 
 RULES.update({rule: ("system", (level,), description) for rule, (level, description) in ADMIN_RULES.items()})
+RULES['trusted-script-invoked'] = ('execution', ('LOW',), 'Invokes an explicitly trusted script; source inspection is skipped.')
+RULES['environment-value-output'] = ('content', ('LOW',), 'Outputs a caller-supplied environment variable not unconditionally replaced locally.')
 NEW_RULES_1_2 = {"write-variable-unresolved", "publish-risk", "git-history-rewrite", "docker-change"}
 NEW_RULES_1_3 = {rule for rule in RULES if rule.startswith("sql-")}
 NEW_RULES_1_4 = {"package-change", "system-settings-change", "filesystem-selection-delete", "runtime-code-loading", "delete-recursion-unresolved"}
@@ -86,6 +88,6 @@ def rule_catalog() -> dict:
     return {"version": CATALOG_VERSION, "schema_version": SCHEMA_VERSION, "rules": [
         {"rule": rule, "type": kind, "levels": list(levels), "description": description,
          "data_schema": {"type": "object"}, "evidence_schema": {"type": "array", "items": {"type": "object"}},
-         "introduced_in": "1.10.0" if rule in {"credentials-exposed", "hardcoded-secret"} else "1.6.0" if rule in NEW_RULES_1_6 else "1.5.0" if rule == "tool-invoked" else "1.4.0" if rule in NEW_RULES_1_4 else "1.3.0" if rule in NEW_RULES_1_3 else "1.2.0" if rule in NEW_RULES_1_2 else "1.1.0" if rule in ADMIN_RULES else "1.0.0", "is_deprecated": False,
+         "introduced_in": "1.12.0" if rule in {"trusted-script-invoked", "environment-value-output"} else "1.10.0" if rule in {"credentials-exposed", "hardcoded-secret"} else "1.6.0" if rule in NEW_RULES_1_6 else "1.5.0" if rule == "tool-invoked" else "1.4.0" if rule in NEW_RULES_1_4 else "1.3.0" if rule in NEW_RULES_1_3 else "1.2.0" if rule in NEW_RULES_1_2 else "1.1.0" if rule in ADMIN_RULES else "1.0.0", "is_deprecated": False,
          "deprecated_in": None, "replaced_by": None}
         for rule, (kind, levels, description) in RULES.items()]}

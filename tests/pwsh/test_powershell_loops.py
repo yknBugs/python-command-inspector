@@ -469,7 +469,8 @@ def test_range_output_is_unavailable_but_its_write_is_still_analyzed(source):
     operation = next(f for f in facts(source) if f.kind == 'write')
     assert operation.targets == (CWD + r'\out.txt',)
     assert operation.payload is None
-    assert rules(analyze(source)) == {'unresolved-value'}
+    assert analyze(source).to_dict() == {}
+    assert 'unresolved-value' in rules(analyze(source.replace('out.txt', 'out.ps1')))
 
 
 @pytest.mark.parametrize('source', [

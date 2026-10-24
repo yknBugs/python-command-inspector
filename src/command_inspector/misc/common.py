@@ -177,7 +177,7 @@ def describe_common(name: str, args: tuple[Value, ...], cwd: str | None, *, shel
         return facts
     if name in INTERPRETERS:
         facts.append(Fact("execute", name, values=args))
-    elif name in {"echo", "printf", "true", "false", ":"}:
+    elif name in {"test", "[", "echo", "printf", "true", "false", ":"}:
         pass
     elif name in TASKS:
         words = [v.text for v in args]

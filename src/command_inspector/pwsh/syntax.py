@@ -1,5 +1,6 @@
 """In-process Windows syntax adapters; no shell subprocesses or Wine."""
 from dataclasses import replace
+import hashlib
 import re
 from ..models import ParsedSource, Span, SyntaxNode
 from ..bash.syntax import FrontendUnavailable, ParseBudgetExceeded
@@ -8,6 +9,39 @@ from ..bash.syntax import FrontendUnavailable, ParseBudgetExceeded
 _FOREACH_OBJECT_NAME = re.compile(r"foreach-object(?=$|[\s;|&>(){])", re.I)
 _NATIVE_EQUALS_ARG = re.compile(r'--[A-Za-z][A-Za-z0-9_-]*=[A-Za-z0-9_./:\\\\-]+(?=$|[\s|;>])')
 _QUOTED_EQUALS_ARG = re.compile(r'''--[A-Za-z][A-Za-z0-9_-]*=(?:'(?:[^']|'')*'|"(?:[^"`$]|`.)*")(?=$|[\s|;>])''')
+
+def _ascii_fold(raw):
+    """Fold each non-ASCII character to equal-length text from its digest.
+
+    The vendored grammar accepts only ASCII identifiers, while PowerShell allows
+    Unicode letters in names, properties and hashtable keys. Keeping the byte
+    length lets the folded copy share every span with the original input. Each
+    character uses its own digest so the replacement cannot collide with
+    ordinary source text. Digest nibbles map onto 'a'-'p': letters only, so a
+    fold can never read as a number or carry a quote or separator the way raw
+    digest bytes could. 'z' pads a digest that is somehow too short.
+    """
+    folded = []
+    for char in raw.decode("utf-8"):
+        if char < "\x80":
+            folded.append(char)
+            continue
+        encoded = char.encode("utf-8")
+        width = len(encoded)
+        digest = hashlib.sha256(encoded).digest()
+        letters = "".join(chr(97 + nibble) for byte in digest for nibble in (byte >> 4, byte & 15))
+        folded.append(letters[:width].ljust(width, "z"))
+    return "".join(folded).encode("utf-8")
+
+
+def _error_nodes(node):
+    count, pending = 0, [node]
+    while pending:
+        current = pending.pop()
+        if current.type == "ERROR" or current.is_missing:
+            count += 1
+        pending.extend(current.children)
+    return count
 
 
 class PowerShellFrontend:
@@ -37,6 +71,18 @@ class PowerShellFrontend:
                 parse_text[node.span.start] = "X"
                 command_names = True
             if node.kind == 'command_elements':
+                for argument in node.children:
+                    if argument.kind == 'generic_token':
+                        # Calculated-property hashes are argument-mode array
+                        # elements. The vendor grammar loses their opening @{.
+                        match = re.match(r'\s*,\s*(?=@\{)', text[argument.span.end:])
+                        if match:
+                            comma = text.index(',', argument.span.end, argument.span.end + match.end())
+                            parse_text[comma] = ' '
+                            command_names = True
+                        if argument.text.startswith(',@{'):
+                            parse_text[argument.span.start] = ' '
+                            command_names = True
                 for parameter in node.children:
                     quoted = (_QUOTED_EQUALS_ARG.match(text, parameter.span.start)
                               if parameter.kind == 'command_parameter' else None)
@@ -59,6 +105,19 @@ class PowerShellFrontend:
                         parse_text[parameter.span.end] = '_'
                         command_names = True
             if node.kind == "ERROR":
+                if any(c.kind == 'command_name' for c in node.children):
+                    for index, child in enumerate(node.children):
+                        if child.kind == ',' and index and index + 1 < len(node.children):
+                            previous, following = node.children[index - 1:index + 2:2]
+                            if previous.text.startswith('@{') and following.kind == 'simple_name':
+                                parse_text[child.span.start] = ' '
+                                command_names = True
+                # Unit suffixes are valid numeric literals in expressions. Mask
+                # only recovery suffixes attached to a proven preceding digit.
+                if (re.fullmatch(r'(?i)[kmgtp]b', node.text) and node.span.start > 0
+                        and text[node.span.start - 1].isdigit()):
+                    parse_text[node.span.start:node.span.end] = '0' * (node.span.end - node.span.start)
+                    command_names = True
                 # A literal standalone '-' in command argument mode is rejected
                 # by the grammar (python -, pwsh -Command -). Same-width masking
                 # recovers the command, without changing expression subtraction.
@@ -98,6 +157,25 @@ class PowerShellFrontend:
                                 index += 1
                             rebuilt.append(SyntaxNode('native_equals_argument', Span(child.span.start, end),
                                                       tuple(parts), text[child.span.start:end]))
+                        else:
+                            rebuilt.append(child)
+                            index += 1
+                    children = tuple(rebuilt)
+                if node.kind == 'command_elements':
+                    # Restore masked argument-mode commas as array structure,
+                    # including hash/scriptblock elements, not extra argv items.
+                    rebuilt, index = [], 0
+                    while index < len(children):
+                        child = children[index]
+                        if (child.kind == 'command_argument_sep' and child.text.strip() == ','
+                                and rebuilt and index + 1 < len(children)):
+                            previous = rebuilt.pop()
+                            following = children[index + 1]
+                            comma = text.index(',', child.span.start, child.span.end)
+                            rebuilt.append(SyntaxNode('array_literal_expression', Span(previous.span.start, following.span.end),
+                                (previous, SyntaxNode(',', Span(comma, comma + 1), text=','), following),
+                                text[previous.span.start:following.span.end]))
+                            index += 2
                         else:
                             rebuilt.append(child)
                             index += 1
@@ -193,6 +271,10 @@ class PowerShellFrontend:
             offsets.extend([index] * len(char.encode()))
         offsets.append(len(text))
         tree = self.parser.parse(raw)
+        if tree.root_node.has_error:
+            folded = self.parser.parse(_ascii_fold(raw))
+            if _error_nodes(folded.root_node) < _error_nodes(tree.root_node):
+                tree = folded
         pending, converted, diagnostics, count = [(tree.root_node, False)], {}, [], 0
         while pending:
             node, ready = pending.pop()

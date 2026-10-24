@@ -19,7 +19,7 @@ from ..shared.value_flow import value as abstract_value, join, join_maps, choice
 PS_ALIASES = {"rm": "remove-item", "del": "remove-item", "erase": "remove-item", "ri": "remove-item",
               "cat": "get-content", "gc": "get-content", "type": "get-content",
               "ls": "get-childitem", "dir": "get-childitem", "gci": "get-childitem",
-              "cd": "set-location", "sl": "set-location", "pwd": "get-location",
+              "cd": "set-location", "sl": "set-location", "pwd": "get-location", "pushd": "push-location",
               "cp": "copy-item", "copy": "copy-item", "cpi": "copy-item",
               "mv": "move-item", "move": "move-item", "mi": "move-item", "ren": "rename-item",
               "ni": "new-item", "spps": "stop-process", "sc": "set-content", "ac": "add-content", "echo": "write-output", "sleep": "start-sleep", "iwr": "invoke-webrequest", "irm": "invoke-restmethod", "iex": "invoke-expression"}
@@ -32,6 +32,7 @@ PS_OPTIONS = {
     "get-content": ({"raw", "wait"}, {"path", "literalpath", "encoding", "totalcount", "tail"}),
     "get-childitem": ({"recurse", "force", "name", "file", "directory"}, {"path", "literalpath", "filter"}),
     "set-location": ({"passthru"}, {"path", "literalpath"}),
+    "push-location": ({"passthru"}, {"path", "literalpath", "stackname"}),
     "set-content": ({"force", "nonewline"}, {"path", "literalpath", "value", "encoding"}),
     "add-content": ({"force", "nonewline"}, {"path", "literalpath", "value", "encoding"}),
     "out-file": ({"append", "force", "noclobber", "nonewline"}, {"filepath", "encoding", "width"}),
@@ -146,12 +147,16 @@ class PowerShellBuilder(WindowsBuilder):
         return join(results, self.limit)
 
     def _value(self, node):
+        from ..shared.runtime_values import runtime_output, component
+        shaped = runtime_output(node.text, 'powershell')
+        if shaped is not None:
+            return shaped
         if node.kind == 'native_equals_argument':
             if len(node.children) != 2:
                 return Value(None, 'unsupported_expression', self.expression_variables(node))
             return compose((self.value(node.children[0]), Value('='), self.value(node.children[1])), limit=self.limit)
         if self.numeric_range_command(node):
-            return Value(None, "range_expression")
+            return component('range_expression')
         text = node.text.strip()
         if text.startswith("@'") and text.endswith("'@"):
             return Value(text[2:-2].strip("\r\n"))
@@ -193,15 +198,15 @@ class PowerShellBuilder(WindowsBuilder):
                 binding = abstract_value(self.env.get(name[4:])) if name.startswith("env:") else self.variables.get(name, Value(None))
                 variables.extend(binding.variables)
                 if binding.text is None:
-                    unresolved_reason = binding.reason or "missing_variable"
+                    result.append(binding)
                 else:
                     result.append(binding.text)
                 i += len(match[0])
             else:
                 result.append(text[i])
                 i += 1
-        rendered = compose((Value(part) for part in result), limit=self.limit)
-        return Value(None if unresolved_reason else rendered.text, unresolved_reason or rendered.reason, tuple(variables))
+        rendered = compose((part if isinstance(part, Value) else Value(part) for part in result), limit=self.limit)
+        return replace(rendered, variables=tuple(variables))
 
     @staticmethod
     def mapping_entries(node):
@@ -229,7 +234,8 @@ class PowerShellBuilder(WindowsBuilder):
     def values(self, node):
         """Literal arrays are finite syntax, not loop/runtime enumeration."""
         if self.numeric_range_command(node):
-            return (Value(None, "range_expression"),)
+            from ..shared.runtime_values import component
+            return (component('range_expression'),)
         if re.fullmatch(r"\$\w+", node.text.strip()):
             name = node.text.strip()[1:].casefold()
             if name in self.arrays:
@@ -301,6 +307,14 @@ class PowerShellBuilder(WindowsBuilder):
             return
         if node.kind == "assignment_expression":
             left = next((c for c in node.children if c.kind == "left_assignment_expression"), None)
+            if (left and any(c.kind == 'assignement_operator' and c.text == '=' for c in node.children)
+                    and re.fullmatch(r'(?i)\[(?:system\.)?console\]::(?:outputencoding|inputencoding)', left.text.strip())):
+                right = node.children[-1]
+                if re.fullmatch(r'(?i)\[(?:system\.)?text\.utf8encoding\]::new\(\s*(?:(?:\$false|\$true)(?:\s*,\s*(?:\$false|\$true))?)?\s*\)|\[(?:system\.)?text\.encoding\]::utf8', right.text.strip()):
+                    return
+                self.scan_subexpressions(right, guard)
+                self.unresolved('Console encoding assignment is outside the supported forms', guard=guard)
+                return
             if left is None or not re.fullmatch(r"\$(?:env:)?\w+", left.text, re.I):
                 self.unresolved("Assignment target is outside the supported variable forms", guard=guard)
                 return
@@ -319,10 +333,7 @@ class PowerShellBuilder(WindowsBuilder):
                 if all((v.text or "").casefold() == "stop" for v in candidates(self.variables.get("erroractionpreference", Value("")))):
                     self.halted = True
             elif name.startswith("env:"):
-                if value.text is None:
-                    self.env[name[4:]] = value
-                else:
-                    self.env[name[4:]] = value.text
+                self.env[name[4:]] = replace(value, local_definition=not guard)
                 self.emit("environment", "environment-modified", targets=(name,), guard=guard)
             else:
                 self.arrays.pop(name, None)
@@ -412,6 +423,8 @@ class PowerShellBuilder(WindowsBuilder):
             if len(stages) > 1 and commands:
                 sink = self.command_name(commands[-1])
                 flags = {"output_consumed"} if sink in {"measure-object", "set-content", "add-content", "out-file", "out-null"} or execution_consumer(previous_facts) else {"selection_uncertain"}
+                if sink in {"set-content", "add-content", "out-file", "out-null"}:
+                    flags.add("output_redirected")
                 self.facts[start:] = [replace(f, flags=f.flags | flags) if f.kind in {"read", "invoke"} else f for f in self.facts[start:]]
                 if sink.removesuffix(".exe") in NETWORK_SINKS or any(f.kind == "invoke" and stdin_network_sink(f) for f in self.facts[start:]):
                     routed = self.facts[start:]
@@ -805,12 +818,12 @@ class PowerShellBuilder(WindowsBuilder):
             from .loops import describe_foreach_object
             describe_foreach_object(self, positional_nodes, bound_nodes, flags, guard)
             return
-        if not positional and not bound.keys() & {"literalpath", "path"} and name == "get-childitem":
+        if not positional and not bound.keys() & {"literalpath", "path"} and name in {"get-childitem", "push-location"}:
             positional.append(Value(self.cwd))
         path = bound.get("literalpath", bound.get("path", bound.get("filepath", positional[0] if positional else Value(None, "missing_operand"))))
         wildcard_paths = {"remove-item", "get-content", "get-childitem", "get-item", "test-path",
                           "set-content", "add-content", "clear-content", "copy-item", "move-item", "rename-item",
-                          "set-location", "new-item"}
+                          "set-location", "push-location", "new-item"}
         if name in wildcard_paths and "literalpath" not in bound and path.text and any(c in path.text for c in "*?["):
             path = replace(path, pattern=True)
         if unknown:
@@ -828,6 +841,11 @@ class PowerShellBuilder(WindowsBuilder):
         if "whatif" in flags:
             self.unresolved("WhatIf previews the operation without performing it", "unresolved-value", guard)
             return
+        if name == 'write-output':
+            references = {n[4:] for v in positional for n in v.variables if n.startswith('env:')}
+            exposed = references & self.input_environment
+            exposed = {n for n in exposed if not abstract_value(self.env.get(n)).local_definition}
+            self.emit('output', 'environment-value-output', values=tuple(positional), targets=tuple(sorted(exposed)), guard=guard)
         if name == 'select-string':
             patterns = bound_groups.get('pattern', positional_groups[0] if positional_groups else ())
             selected = bound_groups.get('literalpath', bound_groups.get('path', positional_groups[1] if len(positional_groups) > 1 else ()))
@@ -864,7 +882,7 @@ class PowerShellBuilder(WindowsBuilder):
             if bound.keys() & {"filter", "include", "exclude"} or flags & {"file", "directory", "recurse"}:
                 read_flags.add("selection_unmodeled")
             self.filesystem("read", "ingest" if name == "get-content" else "list", values, flags=read_flags, guard=guard)
-        elif name == "set-location":
+        elif name in {"set-location", "push-location"}:
             self.filesystem("read", "list", values, guard=guard)
             # A standalone Set-Location can fail and still allow continuation.
             self.pending_cd = self.paths.resolve(path, self.cwd)
@@ -967,7 +985,7 @@ class PowerShellBuilder(WindowsBuilder):
                 if operator.startswith("2") or operator.startswith("*"):
                     self.unresolved("PowerShell error output is discarded", "errors-suppressed", guard)
                 if success:
-                    self.facts[fact_start:] = [replace(f, flags=f.flags | {"output_consumed"}) if f.kind in {"read", "invoke"} else f for f in self.facts[fact_start:]]
+                    self.facts[fact_start:] = [replace(f, flags=f.flags | {"output_consumed", "output_redirected"}) if f.kind in {"read", "invoke"} else f for f in self.facts[fact_start:]]
                 continue
             stderr = operator.startswith("2")
             if stderr:
@@ -975,7 +993,7 @@ class PowerShellBuilder(WindowsBuilder):
             begin = len(self.facts)
             self.filesystem("write", "append" if ">>" in operator else "overwrite", (value,), payload=payload if success else None, guard=guard)
             if success:
-                self.facts[fact_start:begin] = [replace(f, flags=f.flags | {"output_consumed"}) if f.kind in {"read", "invoke"} else f for f in self.facts[fact_start:begin]]
+                self.facts[fact_start:begin] = [replace(f, flags=f.flags | {"output_consumed", "output_redirected"}) if f.kind in {"read", "invoke"} else f for f in self.facts[fact_start:begin]]
 
     def interpreter(self, name, nodes, guard):
         self.interpreter_values(name, [self.value(c) for c in nodes], guard)

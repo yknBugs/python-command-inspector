@@ -62,7 +62,7 @@ def test_bash_common_queries_are_quiet(command):
     'Get-ChildItem | Where-Object {$_.Name -like "*.py"}',
     'Get-ChildItem | Sort-Object Name', 'Get-ChildItem | Group-Object Extension',
     'Get-ChildItem | Format-List Name,Length', 'Write-Output \'{"a":1}\' | ConvertFrom-Json',
-    'Get-Content secrets | Out-Null', 'Write-Host hello -ForegroundColor Green',
+    'Get-Content notes | Out-Null', 'Write-Host hello -ForegroundColor Green',
     'Get-ChildItem -Recurse -Include *.py -File -Depth 2 -Force -ErrorAction Stop',
     'Get-ChildItem -LiteralPath notes -Filter *.py',
     'Get-Content notes -ReadCount 10 -Encoding utf8',
@@ -160,7 +160,7 @@ def test_powershell_effects_remain_visible(command, rule, level):
     ('rg -rn password secrets', {'credentials-read'}),
     ('grep -F -e hello -e password secrets', {'credentials-read'}),
     ('timeout 2 head -n2 secrets', {'credentials-read'}),
-    ('timeout 2 cat secrets > /dev/null', set()),
+    ('timeout 2 cat secrets > /dev/null', {'credentials-read'}),
 ])
 def test_selection_and_wrapper_output(command, expected):
     assert rules(report(command)) == expected
@@ -202,7 +202,7 @@ def test_comma_repair_preserves_quoted_strings_and_rejects_malformed_arrays():
         PowerShellFrontend().parse('Write-Output a,b', max_nodes=10)
 
 
-def test_metadata_and_discard_queries_do_not_read_files():
+def test_metadata_queries_do_not_read_files():
     class Recording(MemoryEvidenceProvider):
         def __init__(self):
             super().__init__(FILES)
@@ -210,7 +210,7 @@ def test_metadata_and_discard_queries_do_not_read_files():
         def answer(self, request):
             self.requests.append(request)
             return super().answer(request)
-    for command, shell in [('find . -name "*.py"', 'bash'), ('Get-Content secrets | Out-Null', 'powershell'), ('rg --files', 'bash')]:
+    for command, shell in [('find . -name "*.py"', 'bash'), ('rg --files', 'bash')]:
         provider = Recording()
         Analyzer(evidence=provider).analyze(command, '/work' if shell == 'bash' else r'C:\work', shell=shell)
         assert not any(isinstance(r, ReadFile) for r in provider.requests)

@@ -114,11 +114,10 @@ def test_bug5a_stderr_redirection_does_not_consume_stdout():
     assert "credentials-read" in rules(report)
 
 
-# 5b. "The reverse also happens: cat secrets > /dev/null still reports credential
-#     exposure."
-def test_bug5b_stdout_discarded_to_dev_null_is_not_model_context():
+# Credential-source inspection is independent of the output destination.
+def test_stdout_discarded_still_checks_credentials():
     report, _ = analyze("cat secrets > /dev/null", files={"/work/secrets": "password=abcdefg\n"})
-    assert "credentials-read" not in rules(report)
+    assert "credentials-read" in rules(report)
 
 
 # 5c. The same descriptor model: duplicating stderr is not suppression, while

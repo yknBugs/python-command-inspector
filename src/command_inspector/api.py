@@ -85,6 +85,8 @@ class Analyzer:
                     context.emit("unsupported-syntax", "Command syntax could not be parsed completely", Fact("unresolved", "parse"))
                 builder = {"bash": SemanticBuilder, "powershell": PowerShellBuilder, "cmd": CmdBuilder, "python": PythonBuilder, "javascript": JavaScriptBuilder}[selected]
                 kwargs = {"paths": paths} if selected in {"python", "javascript"} else {}
+                if selected in {'powershell', 'cmd'}:
+                    kwargs['trusted_scripts'] = self.config.trusted_scripts
                 facts = builder(cwd, dict(env or {}), possible_values=self.config.possible_values, control_flow_steps=self.config.control_flow_steps, value_bytes=self.config.value_bytes, **kwargs).build(parsed.root) if parsed.root is not None else ()
                 context.run(facts, cwd)
             except (ParseBudgetExceeded, RecursionError):

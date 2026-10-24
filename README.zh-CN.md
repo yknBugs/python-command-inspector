@@ -24,6 +24,7 @@
 
 - [项目缘起](#项目缘起)
 - [它能分析什么](#它能分析什么)
+- [运行时输出、来源与可信脚本](#运行时输出来源与可信脚本)
 - [安装](#安装)
 - [快速开始](#快速开始)
 - [报告格式](#报告格式)
@@ -81,6 +82,7 @@
 | 软件包、服务、磁盘、电源 | 安装、`systemctl`、`crontab`、裸设备、关机/重启 |
 | SQL | 在不执行的前提下判断 DDL/DML 的影响等级 |
 | 内容检查 | 从文件中读到的提示注入文本、混淆载荷 |
+| 运行时输出与来源 | 时间戳、摘要、计数器；调用方提供的环境变量；重定向目的地 |
 
 让输出“有用而不是噪音”的三件事：
 
@@ -93,6 +95,25 @@
 3. **只读的本地证据。** 启用后，分析器会对目标做 stat、读取文件头部、展开有界通配符，
    从而区分“删除 `/etc`”和“删除一个不存在的文件”。每次读取和遍历都有预算限制，
    结果按调用缓存。
+
+## 运行时输出、来源与可信脚本
+
+运行时输出不会被求值。分析器仍会识别少量可证明有界的输出形态——格式化时间戳
+（`date +…`、`Get-Date -Format …`）、十六进制摘要（`sha256sum … | cut …`）、数字循环计数器
+或范围——并且只保留**包含目录**作为目标。因此 `… > "/work/doc_$STAMP.txt"` 是 `/work` 内的
+写入，而不是凭空生成一个文件名；`$MISSING` 仍是 `unresolved-value`，不安全的日期格式仍无界，
+设备命名空间也绝不会被降级成普通文件。
+
+输出来源与输出去向分开追踪。打印调用方提供的环境变量、且本地没有无条件覆盖它时，报告
+`environment-value-output`（LOW）。即使输出被重定向到文件或 `/dev/null`/`$null`/`NUL`，
+凭据形态的内容和凭据命名的变量仍会报 `credentials-exposed`。按名字的静音列表
+`quiet_output_variables`（默认 `PIPESTATUS`）和 `quiet_environment_variables`（默认
+`PYTHONIOENCODING`、`PYTHONUTF8`）只压掉普通噪音，绝不压掉凭据形态内容，`PATH` 也不豁免。
+
+`trusted_scripts` 是显式列出的**绝对**脚本路径。调用其中之一会报告
+`trusted-script-invoked`（LOW），但不读取源码。信任只跳过源码检查：对脚本本身的写入仍会
+检查；匹配是精确完整路径，不是 basename；调用之后父级的变量和工作目录变为未解析，而不是
+假定保持不变。
 
 ## 安装
 
@@ -202,8 +223,8 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.11.0",
-  "rule_catalog_version": "1.11.0",
+  "analyzer_version": "1.13.0",
+  "rule_catalog_version": "1.13.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -236,8 +257,9 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 
 ## 发现等级与规则家族
 
-规则目录共 **76 条规则、9 个类型**（`content`、`coverage`、`environment`、`execution`、
-`filesystem`、`git`、`network`、`sql`、`system`）。
+规则目录共 **78 条规则、9 个类型**（`content`、`coverage`、`environment`、`execution`、
+`filesystem`、`git`、`network`、`sql`、`system`）。1.13.0 新增
+`trusted-script-invoked` 与 `environment-value-output`，均为 `LOW`。
 
 | 等级 | 含义 |
 | --- | --- |
@@ -269,6 +291,9 @@ config = AnalyzerConfig(
     shell="bash",
     protected_directories=("/", "/etc", "/usr", "/srv/data"),
     allowed_write_paths=("/work/build",),
+    trusted_scripts=("/work/init.sh",),
+    quiet_output_variables=("PIPESTATUS",),
+    quiet_environment_variables=("PYTHONIOENCODING", "PYTHONUTF8"),
     disabled_rules=frozenset({"git-push"}),
     local_evidence=True,
     possible_values=16,
@@ -282,6 +307,9 @@ analyzer = Analyzer(config)
 ```toml
 shell = "bash"
 local_evidence = true
+trusted_scripts = ["/work/init.sh"]
+quiet_output_variables = ["PIPESTATUS"]
+quiet_environment_variables = ["PYTHONIOENCODING", "PYTHONUTF8"]
 
 [workspace]
 additional_paths = ["/opt/tools"]
@@ -318,6 +346,10 @@ analyzer = Analyzer(load_config("command-inspector.toml"))
 说明：
 
 - 未知的顶层字段、未知规则 id、非布尔值的 `enabled` 都会抛出 `ConfigurationError`。
+- `trusted_scripts` 的条目必须是绝对路径；信任按规范化后的完整路径精确匹配，绝不按 basename
+  匹配。只有显式提供这个列表才会启用信任，分析器不会自己去发现项目文件。
+- `quiet_output_variables` 与 `quiet_environment_variables` 接受 shell 变量名。它们只按名字
+  压掉噪音，不是隐藏凭据形态内容的手段；后者仍会按内容报告。
 - 提供 `[tools.known]` 会**替换**内置的已知工具表，而不是追加；只想新增名字时，
   请自行与 `AnalyzerConfig().known_tools` 合并。
 - `protected.directories` 目前要求 `match = "self"`（默认值），即精确匹配该目录及其内容，
@@ -404,6 +436,10 @@ analyzer = Analyzer(evidence=DisabledEvidenceProvider())
   都不评估。
 - SQL 仅做语法分析：数据库状态、过程体、动态 SQL 和客户端 include 都不会被检查。
 - 通配符匹配有界，且不跟随目录链接；高级 provider 模式保持 `unresolved`。
+- 运行时输出只对已识别的时间戳、摘要、计数器和范围形态做有界推断；其余仍是
+  `unresolved-value`，受限范围只是包含目录，不是具体文件名。
+- 配置为可信的脚本按设计跳过源码检查；分析器不会声称知道它的效果，也不会声称调用前后
+  父级状态保持不变。
 - Windows 模型是保守子集，尚未针对所有已建模命令在原生 Windows 上的实际执行行为做验证。
 
 这是审查辅助工具，不是沙箱。发现项描述的是文本**可能**做什么；没有发现不代表命令安全。
@@ -440,6 +476,7 @@ src/command_inspector/
 ├── reporting.py        # 分组、聚合、脱敏
 ├── paths.py            # POSIX/Windows 词法路径语义
 ├── models.py           # Fact、Finding、AnalysisReport、等级
+├── shared/runtime_values.py  # 有界运行时输出、路径范围、语言提示
 ├── bash/  pwsh/  cmd/  python/  javascript/  sql/   # 前端与语义
 ├── admin/  git/  misc/  shared/                     # 领域模型
 └── schemas/report.json # 报告的 JSON Schema
