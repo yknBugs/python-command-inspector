@@ -71,9 +71,9 @@ def test_nested_success_chain():
     assert result["findings"][0]["data"]["target"] == "/parent/next/x"
 
 
-def test_cd_failure_keeps_sequence_uncertain():
+def test_cd_failure_keeps_both_known_locations():
     result = Analyzer(evidence=DisabledEvidenceProvider()).analyze("cd ..; rm -rf x", "/parent/work", shell="bash")
-    assert rules(result) == {"delete-variable-unresolved", "read-outside-workspace"}
+    assert rules(result) == {"delete-inside-workspace", "delete-outside-workspace", "read-outside-workspace"}
 
 
 @pytest.mark.parametrize("command", ["echo $(sudo true)", "A=$(sudo true)"])

@@ -125,6 +125,15 @@ writes to the script are still inspected, trust is exact-path rather than basena
 the parent's variables and working directory become unresolved after the call instead of being
 assumed unchanged.
 
+### Working-directory alternatives
+
+A directory change can fail. The working directory is therefore a bounded set of possible
+locations, like a variable: after `cd /; rm -rf etc`, both `/work/etc` and `/etc` are analysed;
+after `cd / && rm -rf etc`, only the success path `/etc` is used. Branches, loops, `try`/`catch`,
+pipelines and `Push-Location` stacks join the same way. Findings carry `possible: true` while more
+than one location survives, and the set widens to unresolved when `possible_values` is exceeded
+instead of silently dropping a branch.
+
 ## Install
 
 Requires **Python 3.11+**. The core package has no mandatory runtime dependencies; parsers are
@@ -235,8 +244,8 @@ Every non-empty report conforms to the bundled `schemas/report.json` (JSON Schem
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.15.0",
-  "rule_catalog_version": "1.15.0",
+  "analyzer_version": "1.16.0",
+  "rule_catalog_version": "1.16.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -274,6 +283,8 @@ The catalog contains **79 rules across 9 types** (`content`, `coverage`, `enviro
 `execution`, `filesystem`, `git`, `network`, `sql`, `system`). Version 1.13.0 adds
 `trusted-script-invoked` and `environment-value-output`, both `LOW`; 1.15.0 adds
 `git-commit` (`LOW`) and reports `git commit --amend` as a `MEDIUM` local history rewrite.
+Version 1.16.0 tracks bounded working-directory alternatives instead of widening a failed `cd`
+to unresolved.
 
 | Level | Meaning |
 | --- | --- |

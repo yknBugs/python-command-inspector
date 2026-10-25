@@ -237,10 +237,10 @@ def test_bash_unchanged_or_definition_only_bindings_stay_concrete(branch):
 
 
 @pytest.mark.parametrize('branch', ['if true; then cd /etc; fi', 'case "$key" in a) cd /etc;; esac'])
-def test_bash_branch_cwd_change_invalidates_later_relative_path(branch):
-    deletion = next(f for f in facts(branch + '; rm -rf cache') if f.kind == 'delete')
-    assert deletion.cwd is None
-    assert deletion.targets == ()
+def test_bash_branch_cwd_change_preserves_later_possible_paths(branch):
+    deletions = [f for f in facts(branch + '; rm -rf cache') if f.kind == 'delete']
+    assert {f.cwd for f in deletions} == {'/work', '/etc'}
+    assert {target for f in deletions for target in f.targets} == {'/work/cache', '/etc/cache'}
 
 
 def test_branch_condition_and_case_body_effects_are_visible():

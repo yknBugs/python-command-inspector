@@ -107,9 +107,14 @@ def test_loop_cwd_change_invalidates_later_relative_targets():
     '1 | % {Set-Location build} && Remove-Item cache',
 ])
 def test_loop_success_does_not_confirm_an_uncertain_directory_change(source):
-    operation = next(f for f in facts(source) if f.kind == 'delete')
-    assert operation.cwd is None
-    assert operation.targets == ()
+    operations = [f for f in facts(source) if f.kind == 'delete']
+    if source.startswith('Set-Location'):
+        assert {f.cwd for f in operations} == {CWD, CWD + r'\build'}
+        assert {t for f in operations for t in f.targets} == {CWD + r'\cache', CWD + r'\build\cache'}
+    else:
+        # Repeated relative cd can exceed the finite location budget.
+        assert operations[0].cwd is None
+        assert operations[0].targets == ()
 
 
 def test_conditional_fatal_body_error_does_not_halt_later_top_level_analysis():

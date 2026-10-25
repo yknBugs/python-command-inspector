@@ -104,15 +104,26 @@ def _resolve_word(node, env, quoted, limit):
 
 @dataclass
 class State:
-    cwd: str | None
+    _cwd: Value | str | None
     env: dict[str, Value]
     exported: set[str] = field(default_factory=set)
     readonly: set[str] = field(default_factory=set)
     terminated: bool = False
     possibly_readonly: set[str] = field(default_factory=set)
 
+    def __post_init__(self):
+        self._cwd = abstract_value(self._cwd)
+
+    @property
+    def cwd(self):
+        return self._cwd.text
+
+    @cwd.setter
+    def cwd(self, value):
+        self._cwd = abstract_value(value)
+
     def copy(self):
-        return State(self.cwd, dict(self.env), set(self.exported), set(self.readonly), self.terminated, set(self.possibly_readonly))
+        return State(self._cwd, dict(self.env), set(self.exported), set(self.readonly), self.terminated, set(self.possibly_readonly))
 
 
 class SemanticBuilder:
@@ -142,7 +153,13 @@ class SemanticBuilder:
 
     def walk(self, node: SyntaxNode, guard="", cd_success=False):
         if node.kind in {"command", "redirected_statement", "pipeline", "declaration_command"}:
-            rows, metadata = choices(self.state.env, word_variables(node), self.limit)
+            # Cwd participates in the same bounded product as variable values.
+            # The private key cannot collide with a valid shell variable name.
+            cwd_key = "\0cwd"
+            rows, metadata = choices(self.state.env | {cwd_key: self.state._cwd},
+                                     (*word_variables(node), cwd_key), self.limit)
+            cwd_choices = bool(self.state._cwd.alternatives)
+            metadata = tuple(item for item in metadata if item[0] != cwd_key)
             if rows:
                 before, states = self.state.copy(), []
                 self.choice_serial += 1
@@ -150,16 +167,19 @@ class SemanticBuilder:
                 for case, row in enumerate(rows):
                     case_start = len(self.facts)
                     self.state = before.copy()
-                    self.state.env.update(row)
+                    self.state._cwd = row.get(cwd_key, before._cwd)
+                    self.state.env.update({k: v for k, v in row.items() if k != cwd_key})
                     self._walk(node, guard, cd_success)
                     states.append(self.state.copy())
                     self.facts[case_start:] = mark(self.facts[case_start:], metadata, group, case)
+                    if cwd_choices:
+                        self.facts[case_start:] = [replace(f, flags=f.flags | {"possible"}) for f in self.facts[case_start:]]
                 self.state = before.copy()
                 # Bindings that the command did not mutate retain their whole set.
                 for name in set().union(*(state.env.keys() for state in states)):
                     if any(state.env.get(name) != (before.env | row).get(name) for state, row in zip(states, rows)):
                         self.state.env[name] = join((state.env.get(name) for state in states), self.limit, name)
-                self.state.cwd = states[0].cwd if all(state.cwd == states[0].cwd for state in states) else None
+                self.state._cwd = join((state._cwd for state in states), self.limit)
                 self.state.exported = set.union(*(state.exported for state in states))
                 self.state.readonly = set.intersection(*(state.readonly for state in states))
                 self.state.possibly_readonly = set.union(*(state.readonly | state.possibly_readonly for state in states)) - self.state.readonly
@@ -195,8 +215,7 @@ class SemanticBuilder:
                 exits.append(self.state.copy())
             # Following sequence commands cannot assume a conditional branch ran.
             if not cd_success:
-                if before.cwd != self.state.cwd:
-                    self.state.cwd = None
+                self.state._cwd = join((state._cwd for state in [before, *exits]), self.limit)
                 self.state.env = join_maps([state.env for state in exits], self.limit)
                 self.state.readonly = set.intersection(*(state.readonly for state in exits))
                 self.state.possibly_readonly = set.union(*(state.readonly | state.possibly_readonly for state in exits)) - self.state.readonly
@@ -534,8 +553,7 @@ class SemanticBuilder:
                 incoming = [entry, *(state for _, state in predecessors)]
                 for name in set().union(*(state.env.keys() for state in incoming)):
                     self.state.env[name] = join((state.env.get(name) for state in incoming), self.limit, name)
-                if any(entry.cwd != state.cwd for state in incoming):
-                    self.state.cwd = None
+                self.state._cwd = join((state._cwd for state in incoming), self.limit)
                 self.state.readonly = set.intersection(*(state.readonly for state in incoming))
                 self.state.exported.update(set().union(*(state.exported for state in incoming)))
                 self.state.possibly_readonly.update(set().union(*(state.readonly | state.possibly_readonly for state in incoming)) - self.state.readonly)
@@ -563,8 +581,7 @@ class SemanticBuilder:
         for name in set().union(*(s.env.keys() for s in states)):
             if any(s.env.get(name) != entry.env.get(name) for s in states):
                 self.state.env[name] = join((s.env.get(name) for s in states), self.limit, name)
-        if any(s.cwd != entry.cwd for s in states):
-            self.state.cwd = None
+        self.state._cwd = join((state._cwd for state in states), self.limit) if states else entry._cwd
         self.state.exported.update(set().union(*(s.exported for s in states)))
         self.state.possibly_readonly.update(set().union(*(s.readonly | s.possibly_readonly for s in states)) - self.state.readonly)
 
@@ -632,7 +649,7 @@ class SemanticBuilder:
             body()
             after = self.state.copy()
             self.state.env = join_maps([seed.env, previous.env, after.env], self.limit)
-            self.state.cwd = seed.cwd if seed.cwd == previous.cwd == after.cwd else None
+            self.state._cwd = join((seed._cwd, previous._cwd, after._cwd), self.limit)
             self.state.terminated = seed.terminated
             if self.state == previous:
                 break
@@ -679,8 +696,7 @@ class SemanticBuilder:
             if (name in variables and name not in before.readonly) or before.env.get(name) != after.env.get(name):
                 self.state.env[name] = join((before.env.get(name), after.env.get(name)), self.limit, name)
         self.state.possibly_readonly.update((after.readonly | after.possibly_readonly) - before.readonly)
-        if before.cwd != after.cwd:
-            self.state.cwd = None
+        self.state._cwd = join((before._cwd, after._cwd), self.limit)
 
     def arithmetic_writes(self, node):
         """Find syntactic header writes without evaluating arithmetic or output."""
@@ -878,9 +894,10 @@ class SemanticBuilder:
             operands, _, _, unknown = parse_options(args, SPECS["cd"])
             target_value = operands[0] if operands else self.state.env.get("HOME", Value(None, "missing_variable", ("HOME",)))
             target = resolve_path(target_value, self.state.cwd) if not unknown else None
-            # Changing to the current directory leaves cwd unchanged on either
-            # success or failure; other standalone changes remain uncertain.
-            self.state.cwd = target if cd_success or target == self.state.cwd else None
+            # A successful && edge uses the destination. Otherwise retain both
+            # failure (old cwd) and success (target), subject to value budgets.
+            self.state._cwd = (abstract_value(target) if cd_success else
+                               join((self.state._cwd, abstract_value(target)), self.limit))
         if name in {'echo', 'printf'}:
             exposed = {n for n in set().union(*(set(v.variables) for v in args)) & self.input_environment
                        if not self.state.env.get(n, Value(None)).local_definition}

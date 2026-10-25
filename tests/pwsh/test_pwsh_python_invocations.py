@@ -48,14 +48,18 @@ def test_reported_multiline_python_commands_and_output_pipelines(cwd, effort):
     rules = {finding.rule for finding in report.findings}
     expected = {'command-via-path', 'uses-interpreter'}
     if cwd != WORKSPACE:
-        expected |= {'read-outside-workspace', 'unresolved-value', 'execution-content-unavailable'}
+        expected |= {'read-outside-workspace', 'ingestion-inspection-incomplete', 'execution-content-unavailable'}
+        if effort != 'None':
+            expected.add('execute-target-missing')
     elif effort != 'Full':
         expected |= {'ingestion-inspection-incomplete', 'execution-content-unavailable'}
     assert rules == expected
     assert report.level.name == ('LOW' if cwd == WORKSPACE and effort == 'Full' else 'MEDIUM')
     reads = [query.path for query in provider.queries if isinstance(query, ReadFile)]
-    assert reads == ([WORKSPACE + r'\writers.py', WORKSPACE + r'\policy.py',
-                      WORKSPACE + r'\tools\dump_all_copy.py'] if cwd == WORKSPACE and effort == 'Full' else [])
+    expected_reads = [WORKSPACE + r'\writers.py', WORKSPACE + r'\policy.py', WORKSPACE + r'\tools\dump_all_copy.py']
+    if cwd != WORKSPACE:
+        expected_reads += [r'C:\work\writers.py', r'C:\work\policy.py', r'C:\work\tools\dump_all_copy.py']
+    assert set(reads) == (set(expected_reads) if effort == 'Full' else set())
     if effort == 'None':
         assert not provider.queries
 
@@ -68,7 +72,7 @@ def test_reported_command_keeps_missing_execution_content_explicit_without_evide
 
 
 @pytest.mark.parametrize('effort', ['Full', 'Partial', 'None'])
-def test_python_absolute_candidates_keep_windows_scope_when_cwd_is_unknown(effort):
+def test_python_candidates_keep_windows_scope_for_possible_directories(effort):
     command = r'''cd D:\elsewhere
 & "D:\Temp\python\python.exe" -c "import shutil; names=('C:/Windows', 'cache'); [shutil.rmtree(n) for n in names]"
 '''
@@ -76,8 +80,8 @@ def test_python_absolute_candidates_keep_windows_scope_when_cwd_is_unknown(effor
         command, WORKSPACE, shell='powershell', effort=effort)
     rules = {finding.rule for finding in report.findings}
     assert 'delete-protected-root' in rules
-    assert 'delete-variable-unresolved' in rules
-    assert 'delete-inside-workspace' not in rules
+    assert 'delete-variable-unresolved' not in rules
+    assert {'delete-inside-workspace', 'delete-outside-workspace'} <= rules
     assert report.level.name == 'BLOCK'
 
 

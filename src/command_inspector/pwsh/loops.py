@@ -40,8 +40,7 @@ def merge_bindings(builder, variables, arrays, env, cwd):
     builder.arrays = {k: v for k, v in arrays.items()
                       if builder.arrays.get(k) == v and builder.variables.get(k) == variables.get(k)}
     builder.env = join_maps([env, builder.env], builder.limit, strings=True)
-    if builder.cwd != cwd:
-        builder.cwd = None
+    builder._cwd = join((cwd, builder._cwd), builder.limit)
 
 
 def describe_foreach_object(builder, positional, bound, flags, guard):
@@ -49,7 +48,7 @@ def describe_foreach_object(builder, positional, bound, flags, guard):
         builder.unresolved("WhatIf previews the operation without performing it", "unresolved-value", guard)
         return
     before_variables, before_arrays = dict(builder.variables), dict(builder.arrays)
-    before_env, before_cwd = dict(builder.env), builder.cwd
+    before_env, before_cwd = dict(builder.env), builder._cwd
     before_failed, before_halted = set(builder.failed), builder.halted
     before_stacks = None if builder.location_stacks is None else dict(builder.location_stacks)
     before_input = builder.pipeline_input
@@ -139,7 +138,7 @@ def describe_foreach_object(builder, positional, bound, flags, guard):
     if parallel:
         # Ordinary assignments and Set-Location in a runspace do not bind the caller.
         builder.variables, builder.arrays = before_variables, before_arrays
-        builder.cwd, builder.failed = before_cwd, before_failed
+        builder._cwd, builder.failed = before_cwd, before_failed
         builder.location_stacks = before_stacks
         builder.env = {k: v for k, v in before_env.items() if builder.env.get(k) == v}
     else:

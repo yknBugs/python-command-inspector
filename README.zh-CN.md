@@ -115,6 +115,13 @@
 检查；匹配是精确完整路径，不是 basename；调用之后父级的变量和工作目录变为未解析，而不是
 假定保持不变。
 
+### 工作目录的多个可能值
+
+`cd` 可能失败，所以工作目录现在和变量一样，是一个有界的所有可能值集合：`cd /; rm -rf etc`
+会同时分析 `/work/etc` 和 `/etc`；`cd / && rm -rf etc` 则只用成功路径 `/etc`。分支、循环、
+`try`/`catch`、pipeline 和 `Push-Location` 栈都按同样的方式合并。多于一个位置存活时 finding
+带 `possible: true`；超过 `possible_values` 时整体退化为 unresolved，而不是悄悄丢掉某个分支。
+
 ## 安装
 
 要求 **Python 3.11+**。核心包没有必需的运行时依赖；解析器按 shell 拆成可选 extras，
@@ -223,8 +230,8 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 ```json
 {
   "schema_version": "1.0.0",
-  "analyzer_version": "1.15.0",
-  "rule_catalog_version": "1.15.0",
+  "analyzer_version": "1.16.0",
+  "rule_catalog_version": "1.16.0",
   "level": "HIGH",
   "num_findings": 1,
   "findings": [
@@ -261,6 +268,7 @@ analyzer.analyze(cmd, cwd, shell="bash", effort="Partial")  # 只看元数据，
 `filesystem`、`git`、`network`、`sql`、`system`）。1.13.0 新增
 `trusted-script-invoked` 与 `environment-value-output`，均为 `LOW`；1.15.0 新增
 `git-commit`（`LOW`），并把 `git commit --amend` 报为 `MEDIUM` 的本地历史改写。
+1.16.0 把 `cd` 失败后的工作目录保留为有界的多个可能值，而不是直接变成 unresolved。
 
 | 等级 | 含义 |
 | --- | --- |

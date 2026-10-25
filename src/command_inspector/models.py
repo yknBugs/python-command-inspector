@@ -3,9 +3,9 @@ from dataclasses import dataclass, field
 from enum import IntEnum
 from typing import Any
 
-ANALYZER_VERSION = "1.15.0"
+ANALYZER_VERSION = "1.16.0"
 SCHEMA_VERSION = "1.0.0"
-CATALOG_VERSION = "1.15.0"
+CATALOG_VERSION = "1.16.0"
 
 
 class InputError(ValueError):

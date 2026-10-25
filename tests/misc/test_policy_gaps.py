@@ -255,7 +255,7 @@ def test_disabled_specializations_keep_network_notice_and_catalog_versions():
     config = AnalyzerConfig(disabled_rules=frozenset({"publish-risk"}))
     one(analyze("scp file.txt host:/tmp/", config=config), "network-request", "LOW")
     catalog = Analyzer().rule_catalog()
-    assert catalog["version"] == "1.15.0"
+    assert catalog["version"] == "1.16.0"
     versions = {r["rule"]: r["introduced_in"] for r in catalog["rules"]}
     assert all(versions[r] == "1.2.0" for r in ["git-history-rewrite", "docker-change", "publish-risk", "write-variable-unresolved"])
     assert versions["git-config-modified"] == "1.0.0"

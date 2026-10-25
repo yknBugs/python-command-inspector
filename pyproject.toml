@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "command-inspector"
-version = "1.15.0"
+version = "1.16.0"
 description = "Read-only transparency analysis of proposed shell commands"
 requires-python = ">=3.11"
 dependencies = []

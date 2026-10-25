@@ -506,8 +506,14 @@ def test_possible_cd_destinations_never_restore_the_old_workspace_directory(shel
     source = branch(shell, 'cache', '/outside' if shell == 'bash' else r'C:\outside',
                     {'bash':'cd "$V" && rm child','powershell':'Set-Location $v && Remove-Item child','cmd':'cd %V% && rd child'}[shell])
     result, _ = report(shell, source)
-    assert 'delete-variable-unresolved' in rules(result)
-    assert 'delete-inside-workspace' not in rules(result)
+    if shell in {'bash', 'powershell'}:
+        assert 'delete-variable-unresolved' not in rules(result)
+        assert {'delete-inside-workspace', 'delete-outside-workspace'} <= rules(result)
+        targets = {f.data['target'] for f in result.findings if f.rule.startswith('delete-')}
+        assert ('/work/child' if shell == 'bash' else r'C:\work\child') not in targets
+    else:
+        assert 'delete-variable-unresolved' in rules(result)
+        assert 'delete-inside-workspace' not in rules(result)
 
 
 def test_cmd_branch_scope_changes_leave_delayed_mode_uncertain():

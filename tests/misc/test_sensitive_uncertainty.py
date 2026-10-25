@@ -87,7 +87,8 @@ def test_push_location_has_success_conditional_cwd():
     assert 'unknown-command' not in rules(result)
     assert next(f for f in result['findings'] if f['rule'] == 'delete-outside-workspace')['data']['target'] == r'C:\outside\x'
     result = analyze('Push-Location C:\\outside; Remove-Item x', 'powershell')
-    assert 'delete-variable-unresolved' in rules(result)
+    assert 'delete-variable-unresolved' not in rules(result)
+    assert {'delete-inside-workspace', 'delete-outside-workspace'} <= rules(result)
     assert analyze('Push-Location', 'powershell') == {}
 
 

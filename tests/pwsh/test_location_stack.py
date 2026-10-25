@@ -31,7 +31,8 @@ def test_successful_restore_uses_saved_location(source):
 
 
 def test_pop_without_success_guard_does_not_assume_restore_succeeded():
-    assert 'delete-variable-unresolved' in rules(r'Push-Location C:\outside; Pop-Location; Remove-Item x')
+    assert rules(r'Push-Location C:\outside; Pop-Location; Remove-Item x') == {
+        'read-outside-workspace', 'delete-inside-workspace', 'delete-outside-workspace'}
 
 
 def test_named_stacks_are_independent():

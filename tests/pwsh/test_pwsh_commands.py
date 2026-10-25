@@ -97,7 +97,7 @@ def check(command, shell, rules, level, *, env=None, files=None, cwd=CWD):
     ('unknown-command a', ['unknown-command'], 'LOW'),
     ('if ($x) { Stop-Computer }', ['machine-power-change'], 'HIGH'),
     ('Set-Location build && Remove-Item -Recurse -Force .', ['delete-inside-workspace'], 'LOW'),
-    ('Set-Location build; Remove-Item .', ['delete-variable-unresolved'], 'MEDIUM'),
+    ('Set-Location build; Remove-Item .', ['delete-inside-workspace', 'delete-inside-workspace'], 'LOW'),
 ])
 def test_powershell_profile(command, rules, level):
     check(command, 'powershell', rules, level)

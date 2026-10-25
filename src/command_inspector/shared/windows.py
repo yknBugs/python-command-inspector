@@ -2,7 +2,7 @@
 from dataclasses import replace
 from ..models import Fact, Value
 from ..paths import style_for
-from .value_flow import DEFAULT_LIMIT, ValueLimits, bounded_arguments
+from .value_flow import DEFAULT_LIMIT, ValueLimits, bounded_arguments, value as abstract_value
 
 
 class WindowsBuilder:
@@ -10,17 +10,41 @@ class WindowsBuilder:
         self.limit = ValueLimits(possible_values, value_bytes)
         self.flow_steps = control_flow_steps
         self.choice_serial = 0
-        self.cwd, self.env = cwd, {k.casefold(): v for k, v in env.items()}
+        self._cwd = abstract_value(cwd)
+        self.env = {k.casefold(): v for k, v in env.items()}
         self.input_environment = set(self.env)
         self.paths = style_for(shell, cwd or "C:\\")
         self.shell, self.source, self.context = shell, source, context
         self.facts = []
         self.trusted_scripts = {self.paths.key(p) for p in trusted_scripts}
 
+    @property
+    def cwd(self):
+        """The concrete location, or None when cwd has alternatives or is unknown."""
+        return self._cwd.text
+
+    @cwd.setter
+    def cwd(self, value):
+        self._cwd = abstract_value(value)
+
+    def cwd_choices(self):
+        """Every location the cwd may still denote, in a stable order."""
+        if self._cwd.alternatives:
+            return tuple(c.text for c in self._cwd.alternatives if c.text is not None)
+        return () if self._cwd.text is None else (self._cwd.text,)
+
     def emit(self, kind, operation, values=(), flags=(), payload=None, guard="", targets=None, *, unresolved_variables=()):
         values = bounded_arguments(values, self.limit)
+        # An unknown location still resolves absolute operands, so it is one
+        # unnamed space rather than no space at all.
+        spaces = self.cwd_choices() or (None,)
         if targets is None:
-            targets = tuple(p for v in values if (p := self.paths.resolve(v, self.cwd)) is not None)
+            # A location that is still a bounded set contributes one target per
+            # surviving directory, so no branch loses its own finding.
+            targets = tuple(dict.fromkeys(p for space in spaces for v in values
+                                          if (p := self.paths.resolve(v, space)) is not None))
+        if len(spaces) > 1:
+            flags = frozenset(flags) | {"possible"}
         fact = Fact(kind, operation, targets=tuple(targets), values=tuple(values), flags=frozenset(flags),
                     payload=payload, guard=guard, source=self.source, context=self.context,
                     cwd=self.cwd, bindings=tuple(self.env.items()), shell=self.shell, unresolved_variables=tuple(unresolved_variables))

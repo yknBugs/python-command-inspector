@@ -160,6 +160,8 @@ class PowerShellBuilder(WindowsBuilder):
             return compose((self.value(node.children[0]), Value('='), self.value(node.children[1])), limit=self.limit)
         if self.numeric_range_command(node):
             return component('range_expression')
+        if node.kind == 'command':
+            return Value(None, 'command_output', self.expression_variables(node))
         text = node.text.strip()
         if text.startswith("@'") and text.endswith("'@"):
             return Value(text[2:-2].strip("\r\n"))
@@ -239,6 +241,8 @@ class PowerShellBuilder(WindowsBuilder):
         if self.numeric_range_command(node):
             from ..shared.runtime_values import component
             return (component('range_expression'),)
+        if node.kind == 'command':
+            return (self.value(node),)
         if re.fullmatch(r"\$\w+", node.text.strip()):
             name = node.text.strip()[1:].casefold()
             if name in self.arrays:
@@ -268,10 +272,11 @@ class PowerShellBuilder(WindowsBuilder):
         return tuple(self.facts)
 
     def snapshot(self):
-        return (dict(self.variables), dict(self.arrays), dict(self.env), self.cwd, set(self.failed), self.halted, self.pending_cd, None if self.location_stacks is None else dict(self.location_stacks))
+        return (dict(self.variables), dict(self.arrays), dict(self.env), self._cwd, set(self.failed), self.halted, self.pending_cd, None if self.location_stacks is None else dict(self.location_stacks))
 
     def restore(self, state):
-        variables, arrays, env, self.cwd, failed, self.halted, self.pending_cd, stacks = state
+        variables, arrays, env, cwd, failed, self.halted, self.pending_cd, stacks = state
+        self._cwd = cwd
         self.location_stacks = None if stacks is None else dict(stacks)
         self.variables, self.arrays, self.env, self.failed = dict(variables), dict(arrays), dict(env), set(failed)
 
@@ -279,35 +284,51 @@ class PowerShellBuilder(WindowsBuilder):
         self.variables = join_maps([s[0] for s in states], self.limit)
         self.env = join_maps([s[2] for s in states], self.limit, strings=True)
         self.arrays = {k: v for k, v in states[0][1].items() if all(s[1].get(k) == v for s in states)}
-        self.cwd = states[0][3] if all(s[3] == states[0][3] for s in states) else None
+        self._cwd = join(tuple(s[3] for s in states), self.limit)
         if any(s[7] is None for s in states):
             self.location_stacks = None
         else:
             keys = set().union(*(s[7] for s in states))
-            self.location_stacks = {k: states[0][7].get(k, ()) if all(
-                s[7].get(k, ()) == states[0][7].get(k, ()) for s in states) else None for k in keys}
+            self.location_stacks = {}
+            for key in keys:
+                stacks = [s[7].get(key, ()) for s in states]
+                self.location_stacks[key] = (tuple(join(entries, self.limit) for entries in zip(*stacks))
+                    if all(stack is not None for stack in stacks) and len({len(stack) for stack in stacks}) == 1 else None)
         self.failed = set().union(*(s[4] for s in states))
         self.halted = all(s[5] for s in states)
-        self.pending_cd = states[0][6] if all(s[6] == states[0][6] for s in states) else None
-        if any(s[6] != states[0][6] for s in states):
-            self.cwd = None
+        # Every case changed location: && can narrow to their success targets.
+        self.pending_cd = join((s[6] for s in states), self.limit) if all(s[6] is not None for s in states) else None
 
     def walk(self, node, guard=""):
         if node.kind in {"command", "invokation_expression", "pipeline_chain"}:
             bindings = self.variables | {"env:" + k: abstract_value(v) for k, v in self.env.items()}
-            rows, metadata = choices(bindings, self.expression_variables(node, skip_blocks=True), self.limit)
+            # A bounded location expands the same way a bounded variable does:
+            # one case per surviving directory, each with a concrete cwd, so a
+            # relative operand keeps one target per branch.
+            cwd_key = "\0cwd"
+            locations = self.cwd_choices()
+            names = self.expression_variables(node, skip_blocks=True)
+            if len(locations) > 1:
+                bindings[cwd_key] = self._cwd
+                names = (*names, cwd_key)
+            rows, metadata = choices(bindings, names, self.limit)
             if rows:
+                metadata = tuple(item for item in metadata if item[0] != cwd_key)
                 before, states = self.snapshot(), []
                 self.choice_serial += 1
                 group = self.choice_serial
                 for case, row in enumerate(rows):
                     case_start = len(self.facts)
                     self.restore(before)
-                    self.variables.update({k: v for k, v in row.items() if not k.startswith("env:")})
+                    self.variables.update({k: v for k, v in row.items() if not k.startswith("env:") and k != cwd_key})
                     self.env.update({k[4:]: v.text if v.text is not None else v for k, v in row.items() if k.startswith("env:")})
+                    if cwd_key in row:
+                        self._cwd = abstract_value(row[cwd_key])
                     self._walk(node, guard)
                     states.append(self.snapshot())
                     self.facts[case_start:] = mark(self.facts[case_start:], metadata, group, case)
+                    if cwd_key in row:
+                        self.facts[case_start:] = [replace(f, flags=f.flags | {"possible"}) for f in self.facts[case_start:]]
                 self.merge_states(states)
                 return
         self._walk(node, guard)
@@ -372,7 +393,6 @@ class PowerShellBuilder(WindowsBuilder):
         if node.kind == "pipeline":
             chained = any(c.kind == "pipeline_chain_tail" for c in node.children)
             if chained:
-                initial_cwd = self.cwd
                 stable, states = None, []
                 for child in node.children:
                     if child.kind == "pipeline_chain_tail":
@@ -380,19 +400,17 @@ class PowerShellBuilder(WindowsBuilder):
                         if stable is None:
                             stable = self.snapshot()
                         if self.pending_cd is not None:
-                            self.cwd = self.pending_cd if operator == "&&" else None
+                            if operator == "&&":
+                                self._cwd = self.pending_cd
                             self.pending_cd = None
                         guard = "if the preceding command succeeds" if operator == "&&" else "if the preceding command fails"
                     else:
                         self.walk(child, guard)
                         states.append(self.snapshot())
-                # A changed directory is only known along the chain's success path.
-                changed_cwd = self.cwd != initial_cwd
+                # Following statements join skipped and completed chain paths.
                 if stable is not None:
                     self.merge_states([stable, *states])
                     self.halted = stable[5]
-                if changed_cwd:
-                    self.cwd = None
                 self.pending_cd = None
                 return
             for child in node.children:
@@ -402,11 +420,10 @@ class PowerShellBuilder(WindowsBuilder):
         if node.kind == "pipeline_chain":
             commands = [c for c in node.children if c.kind == "command"]
             if any(c.text in {"&&", "||"} for c in node.children):
-                before = self.cwd
+                before = self._cwd
                 for index, child in enumerate(node.children):
                     self.walk(child, guard if index == 0 else "conditional on the preceding command")
-                if before != self.cwd:
-                    self.cwd = None
+                self._cwd = join((before, self._cwd), self.limit)
                 return
             start = len(self.facts)
             previous_input, previous_values = self.pipeline_input, self.pipeline_values
@@ -644,12 +661,23 @@ class PowerShellBuilder(WindowsBuilder):
             self.choice_serial += 1
             group = self.choice_serial
             single_input = False
+            nonempty_input = False
+            has_default = False
             previous_end = node.span.start
             if node.kind == "switch_statement":
                 condition = next((c for c in node.children if c.kind == "switch_condition"), None)
                 pipeline = next((c for c in condition.children if c.kind == "pipeline"), None) if condition else None
                 items = self.values(pipeline) if pipeline else ()
-                single_input = len(items) == 1 and (items[0].text is not None or bool(items[0].alternatives))
+                # A default covers unmatched items, not an empty input stream.
+                # Do not mistake an opaque command's spelling for its output.
+                pending, command_input = [pipeline] if pipeline else [], False
+                while pending:
+                    current = pending.pop()
+                    command_input |= current.kind == "command"
+                    pending.extend(current.children)
+                nonempty_input = bool(items) and not command_input and all(
+                    item.text is not None or bool(item.alternatives) for item in items)
+                single_input = nonempty_input and len(items) == 1
                 switch_body = next((c for c in node.children if c.kind == "switch_body"), None)
                 previous_end = switch_body.span.start + 1 if switch_body else node.span.start
             matching_states, matching_cases = [entry], []
@@ -659,6 +687,7 @@ class PowerShellBuilder(WindowsBuilder):
                 if node.kind == "switch_statement":
                     label = node.text[previous_end - node.span.start:body.span.start - node.span.start].strip(" \t\r\n;")
                     default = re.fullmatch(r"(?is)(?:\s|<#.*?#>|#[^\r\n]*)*default(?:\s|<#.*?#>|#[^\r\n]*)*", label) is not None
+                    has_default |= default
                     previous_end = body.span.end
                     predecessors = tuple(matching_cases) if single_input else tuple(range(case))
                     if single_input and default:
@@ -679,6 +708,10 @@ class PowerShellBuilder(WindowsBuilder):
                 if node.kind == "switch_statement" and single_input and not default:
                     matching_states.append(self.snapshot())
                     matching_cases.append(case)
+            if node.kind == "switch_statement" and nonempty_input and has_default:
+                # Each input item must visit a matching clause or default. Keep
+                # entry values only when an inspected body itself preserves them.
+                states = states[1:]
             self.merge_states(states or [entry])
         if node.kind == "function_statement":
             self.restore(before)
@@ -911,10 +944,9 @@ class PowerShellBuilder(WindowsBuilder):
                 self.unresolved("Location stack contents are unresolved", "unresolved-value", guard)
             elif stack:
                 self.location_stacks[key] = stack[:-1]
-                self.pending_cd = stack[-1]
+                self.pending_cd = abstract_value(stack[-1])
                 # Restoration can fail (e.g. the saved directory was removed).
-                if self.cwd is None or self.pending_cd is None or self.paths.key(self.cwd) != self.paths.key(self.pending_cd):
-                    self.cwd = None
+                self._cwd = join((self._cwd, self.pending_cd), self.limit)
             # An empty stack cannot change the current location.
         elif name in {"set-location", "push-location"}:
             if name == "push-location":
@@ -924,16 +956,19 @@ class PowerShellBuilder(WindowsBuilder):
                 elif self.location_stacks is not None:
                     key = stack_name.casefold()
                     stack = self.location_stacks.get(key, ())
-                    self.location_stacks[key] = (*stack, self.cwd) if stack is not None and len(stack) < self.flow_steps else None
+                    self.location_stacks[key] = (*stack, self._cwd) if stack is not None and len(stack) < self.flow_steps else None
             elif unknown:
                 # Unsupported stack-selection forms may change the default stack.
                 self.location_stacks = None
             self.filesystem("read", "list", values, guard=guard)
-            # A standalone Set-Location can fail and still allow continuation.
-            self.pending_cd = self.paths.resolve(path, self.cwd)
-            if not (self.cwd is not None and self.pending_cd is not None and
-                    self.paths.key(self.cwd) == self.paths.key(self.pending_cd)):
-                self.cwd = None
+            # A standalone Set-Location can fail and still allow continuation, so
+            # every resolvable destination joins the previous location. Each
+            # alternative of a variable bound to several paths is resolved on its
+            # own, so a bounded set stays one destination per branch.
+            target = join((Value(self.paths.resolve(option, self.cwd), "unresolved_location")
+                           for v in values for option in candidates(v)), self.limit)
+            self.pending_cd = target
+            self._cwd = join((self._cwd, target), self.limit)
         elif name in {"set-content", "add-content", "out-file", "new-item", "clear-content"}:
             payload_index = 0 if bound.keys() & {"path", "literalpath", "filepath"} else 1
             payload_value = bound.get("value", positional[payload_index] if len(positional) > payload_index else Value(self.pipeline_input))
